@@ -1,0 +1,9 @@
+ pandas
+   yfinance
+   sqlalchemy
+   pymysql
+   dhanhq
+   requests
+   Flask
+   gunicorn
+   

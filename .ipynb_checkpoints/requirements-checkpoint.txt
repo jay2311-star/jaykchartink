@@ -1,0 +1,6 @@
+pandas
+yfinance
+sqlalchemy
+pymysql
+dhanhq
+requests
