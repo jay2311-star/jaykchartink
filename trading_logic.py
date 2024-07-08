@@ -29,10 +29,11 @@ LIMIT = "LIMIT"
 STOP_LOSS_MARKET = "STOP_LOSS_MARKET"
 MARGIN = "MARGIN"
 TICK_SIZE = 0.05  # Tick size for most Indian stocks
-
 # Dhan API client credentials
-client_id = '1100526168'
-access_token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzIyNzU4NzU0LCJ0b2tlbkNvbnN1bWVyVHlwZSI6IlNFTEYiLCJ3ZWJob29rVXJsIjoiaHR0cHM6Ly93dmY3eDdxYnMyLmV4ZWN1dGUtYXBpLnVzLWVhc3QtMS5hbWF6b25hd3MuY29tL2RldnRlc3QvcG9zdGJhY2siLCJkaGFuQ2xpZW50SWQiOiIxMTAyODM5ODc2In0.zKIqHmjdK6qmEXEcxcef0ESCgME68lE1NM6Q6pLIL-8wzw8OMhkKwE9VfUjR3Ll6_jiMhGKrZDNVWAvuPTD9hQ'
+
+
+CLIENT_ID = os.getenv('DHAN_CLIENT_ID')
+ACCESS_TOKEN = os.getenv('DHAN_ACCESS_TOKEN')
 
 def get_db_connection():
     try:
