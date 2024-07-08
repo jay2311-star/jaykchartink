@@ -464,7 +464,7 @@ def process_alert(alert_data):
             print(f"No strategy configuration found for {strategy_name}")
             return
 
-        dhan = dhanhq(client_id, access_token)
+        dhan = dhanhq(CLIENT_ID, ACCESS_TOKEN)
 
         for symbol in symbols:
             process_trade(dhan, symbol, strategy_config)
