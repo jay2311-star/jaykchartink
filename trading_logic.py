@@ -8,6 +8,8 @@ import yfinance as yf
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import traceback
+
+
 # Your login credentials
 username = "c.jaykrishnan@gmail.com"
 password = "Pest@123"
@@ -307,7 +309,6 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"An error occurred while placing order: {str(e)}", "ERROR")
         log_entry(f"Error details: {traceback.format_exc()}", "ERROR")
         return None
-
 
 def process_trade(dhan, symbol, strategy_config):
     try:
