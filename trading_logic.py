@@ -107,80 +107,6 @@ def get_sector_and_industry(symbol):
 def log_entry(message, level="INFO"):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"{timestamp} - {level} - {message}")
-def save_summary_to_db(summary_entries):
-    engine = get_db_connection()
-    if engine is not None:
-        try:
-            connection = engine.raw_connection()
-            cursor = connection.cursor()
-            
-            for entry in summary_entries:
-                run_date = datetime.strptime(entry['run_date'], '%d-%b').strftime('%Y-%m-%d')
-                
-                check_query = """
-                SELECT * FROM StrategySummary 
-                WHERE run_date = %s AND strategy_name = %s
-                """
-                cursor.execute(check_query, (run_date, entry['strategy_name']))
-                existing_entry = cursor.fetchone()
-                
-                if existing_entry:
-                    update_query = """
-                    UPDATE StrategySummary SET
-                    run_time = %s,
-                    no_of_symbols_fetched = %s,
-                    trade_type = %s,
-                    max_profit = %s,
-                    max_loss = %s,
-                    total_position_size = %s,
-                    position_size_placed = %s,
-                    orders_placed = %s
-                    WHERE run_date = %s AND strategy_name = %s
-                    """
-                    cursor.execute(update_query, (
-                        entry['run_time'],
-                        entry['no_of_symbols_fetched'],
-                        entry['trade_type'],
-                        entry['max_profit'],
-                        entry['max_loss'],
-                        entry['total_position_size'],
-                        entry['position_size_placed'],
-                        entry['orders_placed'],
-                        run_date,
-                        entry['strategy_name']
-                    ))
-                else:
-                    insert_query = """
-                    INSERT INTO StrategySummary (
-                        run_date, run_time, strategy_name, no_of_symbols_fetched,
-                        trade_type, max_profit, max_loss, total_position_size,
-                        position_size_placed, orders_placed
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """
-                    cursor.execute(insert_query, (
-                        run_date,
-                        entry['run_time'],
-                        entry['strategy_name'],
-                        entry['no_of_symbols_fetched'],
-                        entry['trade_type'],
-                        entry['max_profit'],
-                        entry['max_loss'],
-                        entry['total_position_size'],
-                        entry['position_size_placed'],
-                        entry['orders_placed']
-                    ))
-            
-            connection.commit()
-            print(f"Strategy summary saved to database successfully.")
-        except Error as e:
-            print(f"Error while saving strategy summary to database: {e}")
-        finally:
-            if connection.is_connected():
-                cursor.close()
-                connection.close()
-            engine.dispose()
-    else:
-        print("Failed to connect to the database. Strategy summary not saved.")
 def save_trade_log_to_mysql(trade_entries):
     if not trade_entries:
         return
@@ -209,8 +135,9 @@ def save_trade_log_to_mysql(trade_entries):
                         timestamp, symbol, strategy, action, security_id, quantity, price, order_type, trigger_price,
                         entry_price, exit_price, stop_loss, target, order_status, response, max_profit,
                         max_loss, trade_type, stop_loss_percentage, target_percentage, atr_sl_multiplier,
-                        atr_target_multiplier, product_type, position_size, holding_period
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        atr_target_multiplier, product_type, position_size, holding_period, exit_time,
+                        realized_profit, planned_exit_datetime, exit_reason
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """
                     cursor.execute(insert_query, (
                         entry['timestamp'], entry['symbol'], entry['strategy'], entry['action'], entry['security_id'],
@@ -218,7 +145,8 @@ def save_trade_log_to_mysql(trade_entries):
                         entry['exit_price'], entry['stop_loss'], entry['target'], entry['order_status'], entry['response'],
                         entry['max_profit'], entry['max_loss'], entry['trade_type'], entry['stop_loss_percentage'],
                         entry['target_percentage'], entry['atr_sl_multiplier'], entry['atr_target_multiplier'],
-                        entry['product_type'], entry['position_size'], entry['holding_period']
+                        entry['product_type'], entry['position_size'], entry['holding_period'], entry.get('exit_time'),
+                        entry.get('realized_profit'), entry.get('planned_exit_datetime'), entry.get('exit_reason')
                     ))
                 except Exception as e:
                     print(f"Error inserting entry into MySQL: {e}")
@@ -235,6 +163,7 @@ def save_trade_log_to_mysql(trade_entries):
             engine.dispose()
     else:
         print("Failed to connect to the database. Trade log not saved.")
+
 
 def get_price(security_id):
     try:
