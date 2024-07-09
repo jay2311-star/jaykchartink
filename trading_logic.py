@@ -253,15 +253,28 @@ def save_trade_log_to_mysql(trade_entries):
 
 def get_price(security_id):
     try:
-        response = requests.get(f'http://139.59.70.202:5000/price/{security_id}')
+        url = f'http://139.59.70.202:5000/price/{security_id}'
+        print(f"Fetching price from URL: {url}")
+        response = requests.get(url, timeout=10)  # Add a timeout
+        print(f"Response status code: {response.status_code}")
+        print(f"Response content: {response.text}")
+        
         if response.status_code == 200:
             data = response.json()
-            return float(data.get('latest_price'))
+            price = float(data.get('latest_price'))
+            print(f"Fetched price for security ID {security_id}: {price}")
+            return price
         else:
-            print(f"Failed to get price for security ID {security_id}")
+            print(f"Failed to get price for security ID {security_id}. Status code: {response.status_code}")
             return None
+    except requests.exceptions.RequestException as e:
+        print(f"Request exception while fetching price for security ID {security_id}: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"JSON decode error for security ID {security_id}: {e}")
+        return None
     except Exception as e:
-        print(f"Error fetching price: {e}")
+        print(f"Unexpected error fetching price for security ID {security_id}: {e}")
         return None
 
 def within_trading_hours(start_time, end_time):
@@ -386,20 +399,30 @@ def process_trade(dhan, symbol, strategy_config):
             log_entry(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
             return
 
-        price_from_json = get_price(security_id)
-        
+        # Updated price fetching logic
+        price_from_api = get_price(security_id)
+        if price_from_api is not None:
+            entry_price = price_from_api
+            print(f"Using price from API for {symbol_suffix}: {entry_price}")
+        else:
+            print(f"Failed to get price from API for {symbol_suffix}. Falling back to yfinance.")
+            try:
+                ticker = f'{symbol}.NS'
+                data = yf.download(ticker, period='1d', interval='1m')
+                entry_price = round(data['Close'].iloc[-1], 2)
+                print(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
+            except Exception as e:
+                print(f"Error downloading data from yfinance for {ticker}: {e}")
+                return
+
+        # Calculate ATR
         try:
             ticker = f'{symbol}.NS'
             data = yf.download(ticker, period='1mo', interval='1d')
-            if price_from_json:
-                entry_price = price_from_json
-            else:
-                entry_price = round(data['Close'].iloc[-1], 2)
+            atr = round(calculate_atr(data), 2)
         except Exception as e:
-            log_entry(f"Error downloading data from yfinance for {ticker}: {e}", "ERROR")
+            log_entry(f"Error calculating ATR for {ticker}: {e}", "ERROR")
             return
-        
-        atr = round(calculate_atr(data), 2)
 
         if atr == 0:
             log_entry(f"ATR calculation resulted in zero, skipping trade for {symbol_suffix}", "ERROR")
@@ -435,6 +458,8 @@ def process_trade(dhan, symbol, strategy_config):
 
     except Exception as e:
         print(f"Error in process_trade for symbol {symbol}: {str(e)}")
+
+
 
 def process_alert(alert_data):
     try:
