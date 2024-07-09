@@ -120,7 +120,7 @@ def save_trade_log_to_mysql(trade_entries):
                     entry['response'] = json.dumps(entry['response'])
                     entry['security_id'] = int(entry['security_id'])
                     entry['quantity'] = int(entry['quantity'])
-                    entry.pop('error_message', None)
+
                     check_query = """
                     SELECT COUNT(*)
                     FROM trades
@@ -130,14 +130,17 @@ def save_trade_log_to_mysql(trade_entries):
                     if cursor.fetchone()[0] > 0:
                         print(f"Duplicate entry found for security_id {entry['security_id']} at {entry['timestamp']}. Skipping insertion.")
                         continue
+
                     insert_query = """
                     INSERT INTO trades (
                         timestamp, symbol, strategy, action, security_id, quantity, price, order_type, trigger_price,
                         entry_price, exit_price, stop_loss, target, order_status, response, max_profit,
                         max_loss, trade_type, stop_loss_percentage, target_percentage, atr_sl_multiplier,
-                        atr_target_multiplier, product_type, position_size, holding_period, exit_time,
-                        realized_profit, planned_exit_datetime, exit_reason
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        atr_target_multiplier, product_type, position_size, holding_period, exit_time, realized_profit,
+                        planned_exit_datetime, exit_reason
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
                     """
                     cursor.execute(insert_query, (
                         entry['timestamp'], entry['symbol'], entry['strategy'], entry['action'], entry['security_id'],
@@ -145,8 +148,8 @@ def save_trade_log_to_mysql(trade_entries):
                         entry['exit_price'], entry['stop_loss'], entry['target'], entry['order_status'], entry['response'],
                         entry['max_profit'], entry['max_loss'], entry['trade_type'], entry['stop_loss_percentage'],
                         entry['target_percentage'], entry['atr_sl_multiplier'], entry['atr_target_multiplier'],
-                        entry['product_type'], entry['position_size'], entry['holding_period'], entry.get('exit_time'),
-                        entry.get('realized_profit'), entry.get('planned_exit_datetime'), entry.get('exit_reason')
+                        entry['product_type'], entry['position_size'], entry['holding_period'], entry['exit_time'],
+                        entry['realized_profit'], entry['planned_exit_datetime'], entry['exit_reason']
                     ))
                 except Exception as e:
                     print(f"Error inserting entry into MySQL: {e}")
@@ -154,7 +157,7 @@ def save_trade_log_to_mysql(trade_entries):
             
             connection.commit()
             print("Trade log appended to MySQL database successfully.")
-        except Error as e:
+        except Exception as e:
             print(f"Error while saving trade log to database: {e}")
         finally:
             if connection.is_connected():
@@ -231,6 +234,44 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             tag=strategy_key
         )
         log_entry(f"Order Response: {response}")
+        
+        if response and response['status'] == 'success':
+            # Create trade entry
+            trade_entry = {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'symbol': symbol,
+                'strategy': strategy_key,
+                'action': trade_type,
+                'security_id': security_id,
+                'quantity': lot_size,
+                'price': entry_price,
+                'order_type': MARKET,
+                'trigger_price': None,
+                'entry_price': entry_price,
+                'exit_price': None,
+                'stop_loss': stop_loss,
+                'target': target,
+                'order_status': 'OPEN',
+                'response': response,
+                'max_profit': abs(target - entry_price) * lot_size,
+                'max_loss': abs(stop_loss - entry_price) * lot_size,
+                'trade_type': trade_type,
+                'stop_loss_percentage': abs((entry_price - stop_loss) / entry_price) * 100,
+                'target_percentage': abs((target - entry_price) / entry_price) * 100,
+                'atr_sl_multiplier': None,  # Add this if available
+                'atr_target_multiplier': None,  # Add this if available
+                'product_type': product_type,
+                'position_size': entry_price * lot_size,
+                'holding_period': None,
+                'exit_time': None,
+                'realized_profit': None,
+                'planned_exit_datetime': None,
+                'exit_reason': None
+            }
+            
+            # Save the trade entry to the database
+            save_trade_log_to_mysql([trade_entry])
+        
         return response
     except Exception as e:
         log_entry(f"An error occurred while placing order: {e}", "ERROR")
