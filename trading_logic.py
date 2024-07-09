@@ -7,6 +7,7 @@ from dhanhq import dhanhq
 import yfinance as yf
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
+import traceback
 # Your login credentials
 username = "c.jaykrishnan@gmail.com"
 password = "Pest@123"
@@ -220,12 +221,36 @@ def check_sector_industry(sector, industry, strategy_config):
     return sector_match or industry_match
 def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type):
     try:
-        log_entry(f"Placing {trade_type.lower()} order for {symbol}: security_id={security_id}, quantity={lot_size}, price={entry_price}, product_type={product_type}")
-        log_entry(f"Order Details: Security ID: {security_id}, Entry Price: {entry_price}, Stop Loss: {stop_loss}, Target: {target}")
+        log_entry("=" * 50)
+        log_entry(f"Attempting to place order for {symbol}")
+        log_entry(f"Order details:")
+        log_entry(f"  Security ID: {security_id}")
+        log_entry(f"  Symbol: {symbol}")
+        log_entry(f"  Quantity: {lot_size}")
+        log_entry(f"  Entry Price: {entry_price}")
+        log_entry(f"  Stop Loss: {stop_loss}")
+        log_entry(f"  Target: {target}")
+        log_entry(f"  Trade Type: {trade_type}")
+        log_entry(f"  Product Type: {product_type}")
+        log_entry(f"  Strategy Key: {strategy_key}")
+
         transaction_type = BUY if trade_type == 'Long' else SELL
+        exchange_segment = NSE_FNO if product_type == 'FUT' else NSE_EQ
+
+        log_entry("Dhan API call parameters:")
+        log_entry(f"  security_id: {str(security_id)}")
+        log_entry(f"  exchange_segment: {exchange_segment}")
+        log_entry(f"  transaction_type: {transaction_type}")
+        log_entry(f"  quantity: {lot_size}")
+        log_entry(f"  order_type: {MARKET}")
+        log_entry(f"  product_type: {product_type}")
+        log_entry(f"  price: 0")
+        log_entry(f"  tag: {strategy_key}")
+
+        log_entry("Calling Dhan place_order API...")
         response = dhan.place_order(
             security_id=str(security_id), 
-            exchange_segment=NSE_FNO if product_type == 'FUT' else NSE_EQ,
+            exchange_segment=exchange_segment,
             transaction_type=transaction_type,
             quantity=lot_size,
             order_type=MARKET,
@@ -233,10 +258,11 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             price=0,
             tag=strategy_key
         )
-        log_entry(f"Order Response: {response}")
-        
+        log_entry(f"Dhan API Response:")
+        log_entry(json.dumps(response, indent=2))
+
         if response and response['status'] == 'success':
-            # Create trade entry
+            log_entry("Order placement successful")
             trade_entry = {
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
@@ -251,7 +277,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 'exit_price': None,
                 'stop_loss': stop_loss,
                 'target': target,
-                'order_status': 'OPEN',
+                'order_status': 'open',
                 'response': response,
                 'max_profit': abs(target - entry_price) * lot_size,
                 'max_loss': abs(stop_loss - entry_price) * lot_size,
@@ -269,13 +295,20 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 'exit_reason': None
             }
             
-            # Save the trade entry to the database
+            log_entry("Saving trade entry to database...")
             save_trade_log_to_mysql([trade_entry])
+            log_entry("Trade entry saved successfully")
+        else:
+            log_entry("Order placement failed", "ERROR")
         
+        log_entry("=" * 50)
         return response
     except Exception as e:
-        log_entry(f"An error occurred while placing order: {e}", "ERROR")
+        log_entry(f"An error occurred while placing order: {str(e)}", "ERROR")
+        log_entry(f"Error details: {traceback.format_exc()}", "ERROR")
         return None
+
+
 def process_trade(dhan, symbol, strategy_config):
     try:
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
