@@ -253,26 +253,15 @@ def save_trade_log_to_mysql(trade_entries):
 
 def get_price(security_id):
     try:
-        json_files = ['/root/stockfeed/prices1.json', '/root/stockfeed/prices2.json']
-
-        for file_path in json_files:
-            if os.path.exists(file_path):
-                with open(file_path, 'r') as file:
-                    data = json.load(file)
-
-                    if str(security_id) in data:
-                        price_info = data[str(security_id)]
-                        latest_price = price_info.get('latest_price')
-                        if latest_price is not None:
-                            print(f"Price for security ID {security_id} found in {file_path}")
-                            return float(latest_price)
-            else:
-                print(f"File not found: {file_path}")
-
-        print(f"No price data available for security ID {security_id} in price JSON files")
-        return None
+        response = requests.get(f'http://139.59.70.202:5000/price/{security_id}')
+        if response.status_code == 200:
+            data = response.json()
+            return float(data.get('latest_price'))
+        else:
+            print(f"Failed to get price for security ID {security_id}")
+            return None
     except Exception as e:
-        print(f"An error occurred while fetching price for security ID {security_id}: {e}")
+        print(f"Error fetching price: {e}")
         return None
 
 def within_trading_hours(start_time, end_time):
