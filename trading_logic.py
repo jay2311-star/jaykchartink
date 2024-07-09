@@ -253,30 +253,23 @@ def save_trade_log_to_mysql(trade_entries):
 
 def get_price(security_id):
     try:
-        for endpoint in ['prices', 'historical_prices', 'prices1']:  
-            url = f'http://ec2-54-242-226-103.compute-1.amazonaws.com:8000/{endpoint}'
-            try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    if isinstance(data, dict) and str(security_id) in data:
+        json_files = ['/root/stockfeed/prices1.json', '/root/stockfeed/prices2.json']
+
+        for file_path in json_files:
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as file:
+                    data = json.load(file)
+
+                    if str(security_id) in data:
                         price_info = data[str(security_id)]
-                        if isinstance(price_info, dict):
-                            latest_price = price_info.get('latest_price')
-                            if latest_price is not None:
-                                print(f"Price for security ID {security_id} found in {endpoint}")
-                                return latest_price
-                        elif isinstance(price_info, list) and price_info:
-                            latest_price = price_info[0].get('price')
-                            if latest_price is not None:
-                                print(f"Price for security ID {security_id} found in {endpoint}")
-                                return latest_price
-                else:
-                    print(f"Failed to fetch {endpoint} from server. Status code: {response.status_code}")
-            except requests.RequestException as e:
-                print(f"Error fetching the {endpoint} from server: {e}")
-        print(f"No price data available for security ID {security_id} in all endpoints")
+                        latest_price = price_info.get('latest_price')
+                        if latest_price is not None:
+                            print(f"Price for security ID {security_id} found in {file_path}")
+                            return float(latest_price)
+            else:
+                print(f"File not found: {file_path}")
+
+        print(f"No price data available for security ID {security_id} in price JSON files")
         return None
     except Exception as e:
         print(f"An error occurred while fetching price for security ID {security_id}: {e}")
