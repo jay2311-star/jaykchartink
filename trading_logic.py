@@ -221,7 +221,7 @@ def check_sector_industry(sector, industry, strategy_config):
     sector_match = not allowed_sectors or sector in allowed_sectors
     industry_match = not allowed_industries or industry in allowed_industries
     return sector_match or industry_match
-def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type):
+def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment):
     try:
         log_entry("=" * 50)
         log_entry(f"Attempting to place order for {symbol}")
@@ -235,9 +235,10 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"  Trade Type: {trade_type}")
         log_entry(f"  Product Type: {product_type}")
         log_entry(f"  Strategy Key: {strategy_key}")
+        log_entry(f"  Exchange Segment: {exchange_segment}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
-        exchange_segment = NSE_FNO if product_type == 'MARGIN' else NSE_EQ
+
         log_entry("Dhan API call parameters:")
         log_entry(f"  security_id: {str(security_id)}")
         log_entry(f"  exchange_segment: {exchange_segment}")
@@ -261,6 +262,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         )
         log_entry(f"Dhan API Response:")
         log_entry(json.dumps(response, indent=2))
+
 
         if response and response['status'] == 'success':
             log_entry("Order placement successful")
@@ -429,7 +431,7 @@ def process_trade(dhan, symbol, strategy_config):
         log_entry(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
         log_entry(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
         log_entry(f"Lot Size: {lot_size}, Position Size: {position_size}")
-        response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, strategy_config['TradeType'], strategy_config['Strategy'], strategy_config['product_type'])
+        response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, strategy_config['TradeType'], strategy_config['Strategy'], strategy_config['product_type'], exchange_segment)
         if response and response['status'] == 'success':
             log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
