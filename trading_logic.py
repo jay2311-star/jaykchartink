@@ -237,7 +237,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"  Strategy Key: {strategy_key}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
-        exchange_segment = NSE_FNO if product_type == 'MARGIN' else NSE_EQ
+        exchange_segment = NSE_FNO if instrument_type == 'FUT'  else NSE_EQ
 
         log_entry("Dhan API call parameters:")
         log_entry(f"  security_id: {str(security_id)}")
