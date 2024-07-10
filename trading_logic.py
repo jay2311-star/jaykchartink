@@ -310,21 +310,44 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"An error occurred while placing order: {str(e)}", "ERROR")
         log_entry(f"Error details: {traceback.format_exc()}", "ERROR")
         return None
+        
+def get_positions(dhan):
+    try:
+        log_entry("Retrieving current positions")
+        response = dhan.get_positions()
+        if response['status'] == 'success':
+            log_entry("Positions retrieved successfully")
+            return response['data']
+        else:
+            log_entry(f"Failed to retrieve positions: {response['remarks']}", "ERROR")
+            return []
+    except Exception as e:
+        log_entry(f"An error occurred while retrieving portfolio positions: {e}", "ERROR")
+        return []
+
+def is_position_open(symbol, positions, exchange_segment):
+    for position in positions:
+        if position['tradingSymbol'] == symbol and position['exchangeSegment'] == exchange_segment:
+            return True
+    return False
 
 def process_trade(dhan, symbol, strategy_config):
     try:
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
-            print(f"Outside trading hours for {symbol}")
+            log_entry(f"Outside trading hours for {symbol}")
             return
+
         sector, industry = get_sector_and_industry(symbol)
         if not check_sector_industry(sector, industry, strategy_config):
-            print(f"Sector/Industry mismatch for {symbol}")
+            log_entry(f"Sector/Industry mismatch for {symbol}")
             return
+
         trading_list_df = get_trading_list()
         lots_df = get_lots()
         if trading_list_df is None or lots_df is None:
-            print("Failed to fetch trading list or lots data")
+            log_entry("Failed to fetch trading list or lots data")
             return
+
         if strategy_config['instrument_type'] == 'FUT':
             symbol_suffix = f"{symbol}-Jul2024-FUT"
             exchange_segment = NSE_FNO
@@ -334,18 +357,28 @@ def process_trade(dhan, symbol, strategy_config):
             exchange_segment = NSE_EQ
             lot_size = 1
         else:
-            print(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
+            log_entry(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
             return
+
         if lot_size is None:
-            print(f"Failed to determine lot size for {symbol}")
+            log_entry(f"Failed to determine lot size for {symbol}")
             return
-        print(f"Processing {strategy_config['TradeType']} for {symbol_suffix} with product type {strategy_config['product_type']}")
+
+        log_entry(f"Processing {strategy_config['TradeType']} for {symbol_suffix} with product type {strategy_config['product_type']}")
+        
         matches = trading_list_df.loc[trading_list_df['SEM_TRADING_SYMBOL'] == symbol_suffix, 'SEM_SMST_SECURITY_ID']
         if matches.empty:
-            print(f"No match found for {symbol_suffix}")
+            log_entry(f"No match found for {symbol_suffix}")
             return
         security_id = matches.values[0]
-        
+
+        # Check if position is already open
+        positions = get_positions(dhan)
+        if is_position_open(symbol_suffix, positions, exchange_segment):
+            log_entry(f"Position already open for {symbol_suffix}. Skipping new order.")
+            return
+
+        # Check for max positions
         today = datetime.now().strftime('%Y-%m-%d')
         engine = get_db_connection()
         if engine is not None:
@@ -353,19 +386,32 @@ def process_trade(dhan, symbol, strategy_config):
             cursor = connection.cursor()
             try:
                 query = """
-                SELECT SUM(orders_placed) as today_orders_count, 
-                       SUM(position_size_placed) as total_position_size_today
-                FROM StrategySummary 
-                WHERE run_date = %s AND strategy_name = %s
+                SELECT COUNT(*) as today_orders_count, 
+                       SUM(position_size) as total_position_size_today
+                FROM trades 
+                WHERE DATE(timestamp) = %s AND strategy = %s AND order_status = 'open'
                 """
                 cursor.execute(query, (today, strategy_config['Strategy']))
-                df = cursor.fetchall()
-                today_orders_count = df[0][0] or 0
-                total_position_size_today = df[0][1] or 0
+                result = cursor.fetchone()
+                today_orders_count = result[0] or 0
+                total_position_size_today = result[1] or 0
             finally:
                 cursor.close()
                 connection.close()
                 engine.dispose()
+
+        log_entry(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
+        log_entry(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
+
+        if today_orders_count >= strategy_config["Max_Positions"]:
+            log_entry(f"Max positions limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_Positions']}. Skipping new order.")
+            return
+
+        if total_position_size_today >= strategy_config["Max_PositionSize"]:
+            log_entry(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
+            return
+
+
         log_entry(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
         log_entry(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
         if today_orders_count >= strategy_config["Max_Positions"]:
@@ -438,6 +484,10 @@ def process_trade(dhan, symbol, strategy_config):
             log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response['remarks']}", "ERROR")
     except Exception as e:
         print(f"Error in process_trade for symbol {symbol}: {str(e)}")
+    except Exception as e:
+        log_entry(f"Error in process_trade for symbol {symbol}: {str(e)}")
+        log_entry(f"Full error details: {traceback.format_exc()}")
+
 
 
 
