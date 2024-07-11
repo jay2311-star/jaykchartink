@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from trading_logic import process_alert
 import pymysql
-import os
 import logging
 
 app = Flask(__name__)
@@ -11,18 +10,18 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 logger = logging.getLogger(__name__)
 
 # Database connection details
-DB_HOST = os.getenv('DB_HOST')
-DB_USER = os.getenv('DB_USER')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_NAME = os.getenv('DB_NAME', 'mydb')  # Use 'mydb' as default if not set
+host = 'mydb.cb04giyquztt.ap-south-1.rds.amazonaws.com'
+user = 'admin'
+password = 'Pest1234'
+database = 'mydb'
 
 def get_db_connection():
-    logger.info(f"Connecting to database: Host: {DB_HOST}, User: {DB_USER}, DB: {DB_NAME}")
+    logger.info(f"Connecting to database: Host: {host}, User: {user}, DB: {database}")
     return pymysql.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        db=DB_NAME,
+        host=host,
+        user=user,
+        password=password,
+        db=database,
         cursorclass=pymysql.cursors.DictCursor
     )
 
@@ -50,7 +49,7 @@ def dhan_webhook():
         logger.info("Database connection successful")
         with conn.cursor() as cursor:
             sql = """
-            INSERT INTO mydb.dhan_order_updates (
+            INSERT INTO dhan_order_updates (
                 dhan_client_id, order_id, correlation_id, order_status, transaction_type,
                 exchange_segment, product_type, order_type, validity, trading_symbol,
                 security_id, quantity, disclosed_quantity, price, trigger_price,
@@ -89,7 +88,7 @@ def test_db():
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute('SELECT 1 FROM mydb.dhan_order_updates LIMIT 1')
+            cursor.execute('SELECT 1 FROM dhan_order_updates LIMIT 1')
             result = cursor.fetchone()
         conn.close()
         logger.info("Database connection and query successful")
