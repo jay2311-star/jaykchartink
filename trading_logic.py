@@ -10,6 +10,10 @@ from sqlalchemy import create_engine
 import traceback
 import redis
 
+
+API_BASE_URL = "http://139.59.70.202:5000"  # Replace with your droplet's IP if different
+
+
 # Your login credentials
 username = "c.jaykrishnan@gmail.com"
 password = "Pest@123"
@@ -188,18 +192,17 @@ def save_trade_log_to_mysql(trade_entries):
 
 def get_price(security_id):
     try:
-        price_data = redis_client.hgetall(f"price:{security_id}")
-        if price_data:
+        response = requests.get(f"{API_BASE_URL}/price/{security_id}")
+        if response.status_code == 200:
+            price_data = response.json()
             latest_price = price_data.get('latest_price')
             if latest_price:
                 return float(latest_price)
-            else:
-                log_entry(f"No latest price found for security ID {security_id}")
         else:
-            log_entry(f"No price data found for security ID {security_id}")
+            print(f"Failed to get price for security_id {security_id}. Status code: {response.status_code}")
         return None
-    except Exception as e:
-        log_entry(f"Error fetching price from Redis for security ID {security_id}: {e}", "ERROR")
+    except requests.RequestException as e:
+        print(f"Error fetching price: {e}")
         return None
 
 def within_trading_hours(start_time, end_time):
