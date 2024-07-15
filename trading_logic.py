@@ -9,6 +9,12 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import traceback
 import redis
+import pytz
+
+
+
+
+
 
 
 API_BASE_URL = "http://139.59.70.202:5000"  # Replace with your droplet's IP if different
@@ -68,6 +74,9 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
+                # Ensure Holding_Period is included
+                if 'Holding_Period' not in config:
+                    config['Holding_Period'] = 'day'  # Default to 'day' if not specified
                 return config
             return None
         finally:
@@ -228,7 +237,7 @@ def check_sector_industry(sector, industry, strategy_config):
     industry_match = not allowed_industries or industry in allowed_industries
     return sector_match or industry_match
 
-def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment):
+def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period):
     try:
         log_entry("=" * 50)
         log_entry(f"Attempting to place order for {symbol}")
@@ -243,6 +252,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"  Product Type: {product_type}")
         log_entry(f"  Strategy Key: {strategy_key}")
         log_entry(f"  Exchange Segment: {exchange_segment}")
+        log_entry(f"  Holding Period: {holding_period}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
 
@@ -270,9 +280,27 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"Dhan API Response:")
         log_entry(json.dumps(response, indent=2))
 
-
         if response and response['status'] == 'success':
             log_entry("Order placement successful")
+            
+            # Calculate planned_exit_datetime
+            entry_date = datetime.now().date()
+            planned_exit = None
+            
+            if holding_period.lower() == 'day':
+                planned_exit = entry_date + timedelta(days=1)
+            elif holding_period.lower() == 'week':
+                planned_exit = entry_date + timedelta(days=5)
+            elif holding_period.lower() == 'month':
+                planned_exit = entry_date + timedelta(days=20)
+            else:
+                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}", "WARNING")
+
+            planned_exit_datetime = None
+            if planned_exit:
+                planned_exit_datetime = datetime.combine(planned_exit, datetime.strptime("15:15:00", "%H:%M:%S").time())
+                planned_exit_datetime = pytz.timezone('Asia/Kolkata').localize(planned_exit_datetime)
+
             trade_entry = {
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
@@ -298,10 +326,10 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 'atr_target_multiplier': None,  # Add this if available
                 'product_type': product_type,
                 'position_size': entry_price * lot_size,
-                'holding_period': None,
+                'holding_period': holding_period,
                 'exit_time': None,
                 'realized_profit': None,
-                'planned_exit_datetime': None,
+                'planned_exit_datetime': planned_exit_datetime,
                 'exit_reason': None
             }
             
@@ -415,7 +443,7 @@ def process_trade(dhan, symbol, strategy_config):
             return
 
         if total_position_size_today >= strategy_config["Max_PositionSize"]:
-            log_entry(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config["Max_PositionSize"]}. Skipping new order.")
+            log_entry(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
             return
 
         price_from_redis = get_price(security_id)
@@ -469,7 +497,10 @@ def process_trade(dhan, symbol, strategy_config):
         log_entry(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
         log_entry(f"Lot Size: {lot_size}, Position Size: {position_size}")
 
-        response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, strategy_config['TradeType'], strategy_config['Strategy'], strategy_config['product_type'], exchange_segment)
+        response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
+                               strategy_config['TradeType'], strategy_config['Strategy'], 
+                               strategy_config['product_type'], exchange_segment, 
+                               strategy_config['Holding_Period'])
         if response and response['status'] == 'success':
             log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:

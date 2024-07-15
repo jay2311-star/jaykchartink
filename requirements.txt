@@ -8,4 +8,5 @@ pandas
    dhanhq==1.3
    websockets
    redis
+   pytz 
    
