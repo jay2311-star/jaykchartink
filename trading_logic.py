@@ -10,7 +10,11 @@ from sqlalchemy import create_engine
 import traceback
 import redis
 import pytz
+import logging
 
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 ist = pytz.timezone('Asia/Kolkata')
@@ -211,16 +215,16 @@ def get_price(security_id):
         price_data = redis_client.hgetall(f"price:{security_id}")
         if price_data and 'latest_price' in price_data:
             return float(price_data['latest_price'])
-        logging.warning(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
+        print(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
         return None
     except redis.RedisError as e:
-        logging.error(f"Redis error while fetching price for security ID {security_id}: {e}")
+        print(f"Redis error while fetching price for security ID {security_id}: {e}")
         return None
     except ValueError as e:
-        logging.error(f"Invalid price data for security ID {security_id}: {e}")
+        print(f"Invalid price data for security ID {security_id}: {e}")
         return None
     except Exception as e:
-        logging.error(f"Unexpected error while fetching price for security ID {security_id}: {e}")
+        print(f"Unexpected error while fetching price for security ID {security_id}: {e}")
         return None
 
 
