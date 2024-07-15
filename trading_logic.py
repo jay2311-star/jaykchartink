@@ -13,6 +13,11 @@ import pytz
 
 
 
+ist = pytz.timezone('Asia/Kolkata')
+
+def get_ist_timestamp():
+    return datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S')
+
 
 
 
@@ -74,9 +79,11 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period is included
+                # Ensure Holding_Period and Cycle_time_in_mins are included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
+                if 'Cycle_time_in_mins' not in config:
+                    config['Cycle_time_in_mins'] = None  # Default to None if not specified
                 return config
             return None
         finally:
@@ -201,18 +208,21 @@ def save_trade_log_to_mysql(trade_entries):
 
 def get_price(security_id):
     try:
-        response = requests.get(f"{API_BASE_URL}/price/{security_id}")
-        if response.status_code == 200:
-            price_data = response.json()
-            latest_price = price_data.get('latest_price')
-            if latest_price:
-                return float(latest_price)
-        else:
-            print(f"Failed to get price for security_id {security_id}. Status code: {response.status_code}")
+        price_data = redis_client.hgetall(f"price:{security_id}")
+        if price_data and 'latest_price' in price_data:
+            return float(price_data['latest_price'])
+        logging.warning(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
         return None
-    except requests.RequestException as e:
-        print(f"Error fetching price: {e}")
+    except redis.RedisError as e:
+        logging.error(f"Redis error while fetching price for security ID {security_id}: {e}")
         return None
+    except ValueError as e:
+        logging.error(f"Invalid price data for security ID {security_id}: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error while fetching price for security ID {security_id}: {e}")
+        return None
+
 
 def within_trading_hours(start_time, end_time):
     current_time = datetime.now().time()
@@ -237,7 +247,7 @@ def check_sector_industry(sector, industry, strategy_config):
     industry_match = not allowed_industries or industry in allowed_industries
     return sector_match or industry_match
 
-def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period):
+def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period, cycle_time_in_mins):
     try:
         log_entry("=" * 50)
         log_entry(f"Attempting to place order for {symbol}")
@@ -253,6 +263,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"  Strategy Key: {strategy_key}")
         log_entry(f"  Exchange Segment: {exchange_segment}")
         log_entry(f"  Holding Period: {holding_period}")
+        log_entry(f"  Cycle Time in Minutes: {cycle_time_in_mins}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
 
@@ -284,25 +295,46 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             log_entry("Order placement successful")
             
             # Calculate planned_exit_datetime
-            entry_date = datetime.now().date()
+            entry_datetime = datetime.now(ist)
             planned_exit = None
             
-            if holding_period.lower() == 'day':
-                planned_exit = entry_date + timedelta(days=1)
+            log_entry(f"Calculating planned exit for holding period: {holding_period}")
+            
+            if holding_period.lower() == 'minute':
+                if cycle_time_in_mins is not None:
+                    minutes_to_add = int(cycle_time_in_mins) * 5
+                    planned_exit = entry_datetime + timedelta(minutes=minutes_to_add)
+                    log_entry(f"Using Cycle_time_in_mins: {cycle_time_in_mins}, adding {minutes_to_add} minutes")
+                else:
+                    log_entry("Cycle_time_in_mins not provided for 'minute' holding period. Using default of 5 minutes.", "WARNING")
+                    planned_exit = entry_datetime + timedelta(minutes=5)
+            elif holding_period.lower() == 'day':
+                planned_exit = entry_datetime.date() + timedelta(days=1)
             elif holding_period.lower() == 'week':
-                planned_exit = entry_date + timedelta(days=5)
+                planned_exit = entry_datetime.date() + timedelta(days=5)
             elif holding_period.lower() == 'month':
-                planned_exit = entry_date + timedelta(days=20)
+                planned_exit = entry_datetime.date() + timedelta(days=20)
             else:
-                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}", "WARNING")
+                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}. Using default of 1 day.", "WARNING")
+                planned_exit = entry_datetime.date() + timedelta(days=1)
 
             planned_exit_datetime = None
             if planned_exit:
-                planned_exit_datetime = datetime.combine(planned_exit, datetime.strptime("15:15:00", "%H:%M:%S").time())
-                planned_exit_datetime = pytz.timezone('Asia/Kolkata').localize(planned_exit_datetime)
+                if isinstance(planned_exit, datetime):
+                    planned_exit_datetime = planned_exit
+                else:
+                    planned_exit_datetime = datetime.combine(planned_exit, time(15, 15))
+                planned_exit_datetime = ist.localize(planned_exit_datetime)
+                
+                # Ensure planned exit is not in the past
+                if planned_exit_datetime <= entry_datetime:
+                    planned_exit_datetime += timedelta(days=1)
+                    log_entry(f"Adjusted planned exit to next day: {planned_exit_datetime}", "WARNING")
+
+            log_entry(f"Calculated planned exit datetime: {planned_exit_datetime}")
 
             trade_entry = {
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'timestamp': entry_datetime.strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
                 'strategy': strategy_key,
                 'action': trade_type,
@@ -368,9 +400,14 @@ def is_position_open(symbol, positions, exchange_segment):
 
 def process_trade(dhan, symbol, strategy_config):
     try:
+        if strategy_config.get('On_Off', '').lower() != 'on':
+            log_entry(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
+            return
+
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
             log_entry(f"Outside trading hours for {symbol}")
             return
+
 
         sector, industry = get_sector_and_industry(symbol)
         if not check_sector_industry(sector, industry, strategy_config):
@@ -500,14 +537,17 @@ def process_trade(dhan, symbol, strategy_config):
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
                                strategy_config['TradeType'], strategy_config['Strategy'], 
                                strategy_config['product_type'], exchange_segment, 
-                               strategy_config['Holding_Period'])
+                               strategy_config['Holding_Period'],
+                               strategy_config.get('Cycle_time_in_mins'))
         if response and response['status'] == 'success':
             log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
             log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response['remarks']}", "ERROR")
+            
     except Exception as e:
         log_entry(f"Error in process_trade for symbol {symbol}: {str(e)}")
         log_entry(f"Full error details: {traceback.format_exc()}")
+
 
 def process_alert(alert_data):
     try:
