@@ -55,12 +55,17 @@ TICK_SIZE = 0.05  # Tick size for most Indian stocks
 CLIENT_ID = os.getenv('DHAN_CLIENT_ID')
 ACCESS_TOKEN = os.getenv('DHAN_ACCESS_TOKEN')
 
-# Redis connection details
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+REDIS_RETRY_ATTEMPTS = 3
+REDIS_RETRY_DELAY = 1  
+
+
+def get_redis_client():
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 # Create a Redis client
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+# redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 def get_db_connection():
     try:
@@ -211,22 +216,21 @@ def save_trade_log_to_mysql(trade_entries):
         print("Failed to connect to the database. Trade log not saved.")
 
 def get_price(security_id):
-    try:
-        price_data = redis_client.hgetall(f"price:{security_id}")
-        if price_data and 'latest_price' in price_data:
-            return float(price_data['latest_price'])
-        print(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
-        return None
-    except redis.RedisError as e:
-        print(f"Redis error while fetching price for security ID {security_id}: {e}")
-        return None
-    except ValueError as e:
-        print(f"Invalid price data for security ID {security_id}: {e}")
-        return None
-    except Exception as e:
-        print(f"Unexpected error while fetching price for security ID {security_id}: {e}")
-        return None
-
+    redis_client = get_redis_client()
+    for attempt in range(REDIS_RETRY_ATTEMPTS):
+        try:
+            price_data = redis_client.hgetall(f"price:{security_id}")
+            if price_data and 'latest_price' in price_data:
+                return float(price_data['latest_price'])
+            logging.warning(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
+            return None
+        except RedisError as e:
+            logging.error(f"Redis error while fetching price for security ID {security_id}: {e}")
+            if attempt < REDIS_RETRY_ATTEMPTS - 1:
+                time.sleep(REDIS_RETRY_DELAY)
+            else:
+                return None
+    return None
 
 def within_trading_hours(start_time, end_time):
     current_time = datetime.now().time()
@@ -543,15 +547,13 @@ def process_trade(dhan, symbol, strategy_config):
                                strategy_config['product_type'], exchange_segment, 
                                strategy_config['Holding_Period'],
                                strategy_config.get('Cycle_time_in_mins'))
-        if response and response['status'] == 'success':
+        if response and response.get('status') == 'success':
             log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
-            log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response['remarks']}", "ERROR")
-            
+            log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response}", "ERROR")
     except Exception as e:
         log_entry(f"Error in process_trade for symbol {symbol}: {str(e)}")
         log_entry(f"Full error details: {traceback.format_exc()}")
-
 
 def process_alert(alert_data):
     try:
