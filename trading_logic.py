@@ -11,6 +11,7 @@ import traceback
 import redis
 import pytz
 import logging
+from redis import Redis, ConnectionError, RedisError
 
 
 # Configure logging
