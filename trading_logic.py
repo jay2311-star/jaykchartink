@@ -6,19 +6,10 @@ import requests
 from dhanhq import dhanhq
 import yfinance as yf
 from datetime import datetime, timedelta
-import time
 from sqlalchemy import create_engine
 import traceback
 import redis
 import pytz
-
-
-
-ist = pytz.timezone('Asia/Kolkata')
-
-
-def get_ist_timestamp():
-    return datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S')
 
 
 
@@ -145,9 +136,7 @@ def get_sector_and_industry(symbol):
         return "Unknown", "Unknown"
 
 def log_entry(message, level="INFO"):
-    
-    'timestamp': get_ist_timestamp(),
-    
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"{timestamp} - {level} - {message}")
 
 def save_trade_log_to_mysql(trade_entries):
@@ -313,7 +302,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 planned_exit_datetime = pytz.timezone('Asia/Kolkata').localize(planned_exit_datetime)
 
             trade_entry = {
-                'timestamp': get_ist_timestamp(),
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
                 'strategy': strategy_key,
                 'action': trade_type,
