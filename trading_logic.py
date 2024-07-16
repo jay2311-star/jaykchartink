@@ -5,12 +5,21 @@ import json
 import requests
 from dhanhq import dhanhq
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from sqlalchemy import create_engine
 import traceback
 import redis
 import pytz
-import time
+import logging
+from redis import Redis, ConnectionError, RedisError
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+ist = pytz.timezone('Asia/Kolkata')
+
+def get_ist_timestamp():
+    return datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S')
 
 API_BASE_URL = "http://139.59.70.202:5000"  # Replace with your droplet's IP if different
 
@@ -41,18 +50,27 @@ CLIENT_ID = os.getenv('DHAN_CLIENT_ID')
 ACCESS_TOKEN = os.getenv('DHAN_ACCESS_TOKEN')
 
 # Redis connection details
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+REDIS_DB = int(os.getenv('REDIS_DB', 0))
+REDIS_RETRY_ATTEMPTS = 3
+REDIS_RETRY_DELAY = 1
 
 # Create a Redis client
-redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+    redis_client.ping()
+    logging.info(f"Successfully connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+except redis.ConnectionError as e:
+    logging.error(f"Failed to connect to Redis: {e}")
+    redis_client = None
 
 def get_db_connection():
     try:
         engine = create_engine(f'mysql+pymysql://{user}:{password}@{host}/{database}')
         return engine
     except Exception as e:
-        print(f"Error while connecting to MySQL: {e}")
+        logging.error(f"Error while connecting to MySQL: {e}")
         return None
 
 def get_strategy_config(strategy_name):
@@ -87,7 +105,7 @@ def get_trading_list():
             trading_list_df = pd.read_sql(query, engine)
             return trading_list_df
         except Exception as e:
-            print(f"Error while fetching trading list: {e}")
+            logging.error(f"Error while fetching trading list: {e}")
             return None
         finally:
             if engine is not None:
@@ -103,7 +121,7 @@ def get_lots():
             lots_df = pd.read_sql(query, engine)
             return lots_df
         except Exception as e:
-            print(f"Error while fetching lots: {e}")
+            logging.error(f"Error while fetching lots: {e}")
             return None
         finally:
             if engine is not None:
@@ -123,7 +141,7 @@ def get_sector_and_industry(symbol):
             else:
                 return "Unknown", "Unknown"
         except Exception as e:
-            print(f"Error while fetching sector and industry for {symbol_ns}: {e}")
+            logging.error(f"Error while fetching sector and industry for {symbol_ns}: {e}")
             return "Unknown", "Unknown"
         finally:
             if engine is not None:
@@ -131,12 +149,9 @@ def get_sector_and_industry(symbol):
     else:
         return "Unknown", "Unknown"
 
-def log_entry(message, level="INFO"):
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"{timestamp} - {level} - {message}")
-
 def save_trade_log_to_mysql(trade_entries):
     if not trade_entries:
+        logging.warning("No trade entries to save")
         return
     engine = get_db_connection()
     if engine is not None:
@@ -156,7 +171,7 @@ def save_trade_log_to_mysql(trade_entries):
                     """
                     cursor.execute(check_query, (entry['security_id'], entry['timestamp']))
                     if cursor.fetchone()[0] > 0:
-                        print(f"Duplicate entry found for security_id {entry['security_id']} at {entry['timestamp']}. Skipping insertion.")
+                        logging.warning(f"Duplicate entry found for security_id {entry['security_id']} at {entry['timestamp']}. Skipping insertion.")
                         continue
 
                     insert_query = """
@@ -179,36 +194,44 @@ def save_trade_log_to_mysql(trade_entries):
                         entry['product_type'], entry['position_size'], entry['holding_period'], entry['exit_time'],
                         entry['realized_profit'], entry['planned_exit_datetime'], entry['exit_reason']
                     ))
+                    logging.info(f"Trade entry inserted for {entry['symbol']}")
                 except Exception as e:
-                    print(f"Error inserting entry into MySQL: {e}")
-                    print(f"Problematic entry: {entry}")
+                    logging.error(f"Error inserting entry into MySQL: {e}")
+                    logging.error(f"Problematic entry: {entry}")
             
             connection.commit()
-            print("Trade log appended to MySQL database successfully.")
+            logging.info("Trade log appended to MySQL database successfully.")
         except Exception as e:
-            print(f"Error while saving trade log to database: {e}")
+            logging.error(f"Error while saving trade log to database: {e}")
         finally:
             if connection.is_connected():
                 cursor.close()
                 connection.close()
             engine.dispose()
     else:
-        print("Failed to connect to the database. Trade log not saved.")
+        logging.error("Failed to connect to the database. Trade log not saved.")
 
 def get_price(security_id):
-    try:
-        response = requests.get(f"{API_BASE_URL}/price/{security_id}")
-        if response.status_code == 200:
-            price_data = response.json()
-            latest_price = price_data.get('latest_price')
-            if latest_price:
-                return float(latest_price)
-        else:
-            print(f"Failed to get price for security_id {security_id}. Status code: {response.status_code}")
+    if redis_client is None:
+        logging.error("Redis client is not initialized. Cannot fetch price.")
         return None
-    except requests.RequestException as e:
-        print(f"Error fetching price: {e}")
-        return None
+
+    for attempt in range(REDIS_RETRY_ATTEMPTS):
+        try:
+            price_data = redis_client.hgetall(f"price:{security_id}")
+            if price_data and 'latest_price' in price_data:
+                return float(price_data['latest_price'])
+            logging.warning(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
+            return None
+        except RedisError as e:
+            logging.error(f"Redis error while fetching price for security ID {security_id}: {e}")
+            if attempt < REDIS_RETRY_ATTEMPTS - 1:
+                logging.info(f"Retrying in {REDIS_RETRY_DELAY} seconds...")
+                time.sleep(REDIS_RETRY_DELAY)
+            else:
+                logging.error("Max retries reached. Falling back to alternative price source.")
+                return None
+    return None
 
 def within_trading_hours(start_time, end_time):
     current_time = datetime.now().time()
@@ -235,35 +258,35 @@ def check_sector_industry(sector, industry, strategy_config):
 
 def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period, cycle_time_in_mins):
     try:
-        log_entry("=" * 50)
-        log_entry(f"Attempting to place order for {symbol}")
-        log_entry(f"Order details:")
-        log_entry(f"  Security ID: {security_id}")
-        log_entry(f"  Symbol: {symbol}")
-        log_entry(f"  Quantity: {lot_size}")
-        log_entry(f"  Entry Price: {entry_price}")
-        log_entry(f"  Stop Loss: {stop_loss}")
-        log_entry(f"  Target: {target}")
-        log_entry(f"  Trade Type: {trade_type}")
-        log_entry(f"  Product Type: {product_type}")
-        log_entry(f"  Strategy Key: {strategy_key}")
-        log_entry(f"  Exchange Segment: {exchange_segment}")
-        log_entry(f"  Holding Period: {holding_period}")
-        log_entry(f"  Cycle Time in Minutes: {cycle_time_in_mins}")
+        logging.info("=" * 50)
+        logging.info(f"Attempting to place order for {symbol}")
+        logging.info(f"Order details:")
+        logging.info(f"  Security ID: {security_id}")
+        logging.info(f"  Symbol: {symbol}")
+        logging.info(f"  Quantity: {lot_size}")
+        logging.info(f"  Entry Price: {entry_price}")
+        logging.info(f"  Stop Loss: {stop_loss}")
+        logging.info(f"  Target: {target}")
+        logging.info(f"  Trade Type: {trade_type}")
+        logging.info(f"  Product Type: {product_type}")
+        logging.info(f"  Strategy Key: {strategy_key}")
+        logging.info(f"  Exchange Segment: {exchange_segment}")
+        logging.info(f"  Holding Period: {holding_period}")
+        logging.info(f"  Cycle Time in Minutes: {cycle_time_in_mins}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
 
-        log_entry("Dhan API call parameters:")
-        log_entry(f"  security_id: {str(security_id)}")
-        log_entry(f"  exchange_segment: {exchange_segment}")
-        log_entry(f"  transaction_type: {transaction_type}")
-        log_entry(f"  quantity: {lot_size}")
-        log_entry(f"  order_type: {MARKET}")
-        log_entry(f"  product_type: {product_type}")
-        log_entry(f"  price: 0")
-        log_entry(f"  tag: {strategy_key}")
+        logging.info("Dhan API call parameters:")
+        logging.info(f"  security_id: {str(security_id)}")
+        logging.info(f"  exchange_segment: {exchange_segment}")
+        logging.info(f"  transaction_type: {transaction_type}")
+        logging.info(f"  quantity: {lot_size}")
+        logging.info(f"  order_type: {MARKET}")
+        logging.info(f"  product_type: {product_type}")
+        logging.info(f"  price: 0")
+        logging.info(f"  tag: {strategy_key}")
 
-        log_entry("Calling Dhan place_order API...")
+        logging.info("Calling Dhan place_order API...")
         response = dhan.place_order(
             security_id=str(security_id), 
             exchange_segment=exchange_segment,
@@ -274,45 +297,43 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             price=0,
             tag=strategy_key
         )
-        log_entry(f"Dhan API Response:")
-        log_entry(json.dumps(response, indent=2))
+        logging.info(f"Dhan API Response:")
+        logging.info(json.dumps(response, indent=2))
 
         if response and response['status'] == 'success':
-            log_entry("Order placement successful")
+            logging.info("Order placement successful")
             
-            # Calculate planned_exit_datetime
-            entry_time = datetime.now(pytz.timezone('Asia/Kolkata'))
+            entry_datetime = datetime.now(ist)
             planned_exit = None
             
             if holding_period.lower() == 'minute':
-                if cycle_time_in_mins is not None and cycle_time_in_mins > 0:
-                    planned_exit = entry_time + timedelta(minutes=cycle_time_in_mins)
-                    log_entry(f"Planned exit time set to {cycle_time_in_mins} minutes after entry")
+                if cycle_time_in_mins is not None:
+                    minutes_to_add = int(cycle_time_in_mins) * 5
+                    planned_exit = entry_datetime + timedelta(minutes=minutes_to_add)
                 else:
-                    log_entry(f"Invalid cycle_time_in_mins: {cycle_time_in_mins}. Using default day holding period.", "WARNING")
-                    planned_exit = entry_time.date() + timedelta(days=1)
+                    planned_exit = entry_datetime + timedelta(minutes=5)
             elif holding_period.lower() == 'day':
-                planned_exit = entry_time.date() + timedelta(days=1)
+                planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
             elif holding_period.lower() == 'week':
-                planned_exit = entry_time.date() + timedelta(days=5)
+                planned_exit = (entry_datetime + timedelta(days=5)).replace(hour=15, minute=15, second=0, microsecond=0)
             elif holding_period.lower() == 'month':
-                planned_exit = entry_time.date() + timedelta(days=20)
+                planned_exit = (entry_datetime + timedelta(days=20)).replace(hour=15, minute=15, second=0, microsecond=0)
             else:
-                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}. Using default day holding period.", "WARNING")
-                planned_exit = entry_time.date() + timedelta(days=1)
+                planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
+                                                                
 
-            planned_exit_datetime = None
-            if planned_exit:
-                if isinstance(planned_exit, datetime):
-                    planned_exit_datetime = planned_exit
-                else:
-                    planned_exit_datetime = datetime.combine(planned_exit, datetime.strptime("15:15:00", "%H:%M:%S").time())
-                planned_exit_datetime = pytz.timezone('Asia/Kolkata').localize(planned_exit_datetime)
+                                                                            ##
 
-            log_entry(f"Planned exit datetime: {planned_exit_datetime}")
+
+                                                                            
+            # Ensure planned exit is not in the past
+            if planned_exit <= entry_datetime:
+                planned_exit += timedelta(days=1)
+
+            logging.info(f"Calculated planned exit datetime: {planned_exit}")
 
             trade_entry = {
-                'timestamp': entry_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'timestamp': entry_datetime.strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
                 'strategy': strategy_key,
                 'action': trade_type,
@@ -327,50 +348,47 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 'target': target,
                 'order_status': 'open',
                 'response': response,
-
-                ##
-
                 'max_profit': abs(target - entry_price) * lot_size,
                 'max_loss': abs(stop_loss - entry_price) * lot_size,
                 'trade_type': trade_type,
                 'stop_loss_percentage': abs((entry_price - stop_loss) / entry_price) * 100,
                 'target_percentage': abs((target - entry_price) / entry_price) * 100,
-                'atr_sl_multiplier': None,  # Add this if available
-                'atr_target_multiplier': None,  # Add this if available
+                'atr_sl_multiplier': None,
+                'atr_target_multiplier': None,
                 'product_type': product_type,
                 'position_size': entry_price * lot_size,
                 'holding_period': holding_period,
                 'exit_time': None,
                 'realized_profit': None,
-                'planned_exit_datetime': planned_exit_datetime,
+                'planned_exit_datetime': planned_exit,
                 'exit_reason': None
             }
             
-            log_entry("Saving trade entry to database...")
+            logging.info("Saving trade entry to database...")
             save_trade_log_to_mysql([trade_entry])
-            log_entry("Trade entry saved successfully")
+            logging.info("Trade entry saved successfully")
         else:
-            log_entry("Order placement failed", "ERROR")
+            logging.error("Order placement failed")
         
-        log_entry("=" * 50)
+        logging.info("=" * 50)
         return response
     except Exception as e:
-        log_entry(f"An error occurred while placing order: {str(e)}", "ERROR")
-        log_entry(f"Error details: {traceback.format_exc()}", "ERROR")
+        logging.error(f"An error occurred while placing order: {str(e)}")
+        logging.error(f"Error details: {traceback.format_exc()}")
         return None
 
 def get_positions(dhan):
     try:
-        log_entry("Retrieving current positions")
+        logging.info("Retrieving current positions")
         response = dhan.get_positions()
         if response['status'] == 'success':
-            log_entry("Positions retrieved successfully")
+            logging.info("Positions retrieved successfully")
             return response['data']
         else:
-            log_entry(f"Failed to retrieve positions: {response['remarks']}", "ERROR")
+            logging.error(f"Failed to retrieve positions: {response['remarks']}")
             return []
     except Exception as e:
-        log_entry(f"An error occurred while retrieving portfolio positions: {e}", "ERROR")
+        logging.error(f"An error occurred while retrieving portfolio positions: {e}")
         return []
 
 def is_position_open(symbol, positions, exchange_segment):
@@ -381,19 +399,23 @@ def is_position_open(symbol, positions, exchange_segment):
 
 def process_trade(dhan, symbol, strategy_config):
     try:
+        if strategy_config.get('On_Off', '').lower() != 'on':
+            logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
+            return
+
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
-            log_entry(f"Outside trading hours for {symbol}")
+            logging.info(f"Outside trading hours for {symbol}")
             return
 
         sector, industry = get_sector_and_industry(symbol)
         if not check_sector_industry(sector, industry, strategy_config):
-            log_entry(f"Sector/Industry mismatch for {symbol}")
+            logging.info(f"Sector/Industry mismatch for {symbol}")
             return
 
         trading_list_df = get_trading_list()
         lots_df = get_lots()
         if trading_list_df is None or lots_df is None:
-            log_entry("Failed to fetch trading list or lots data")
+            logging.error("Failed to fetch trading list or lots data")
             return
 
         if strategy_config['instrument_type'] == 'FUT':
@@ -405,25 +427,25 @@ def process_trade(dhan, symbol, strategy_config):
             exchange_segment = NSE_EQ
             lot_size = 1
         else:
-            log_entry(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
+            logging.error(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
             return
 
         if lot_size is None:
-            log_entry(f"Failed to determine lot size for {symbol}")
+            logging.error(f"Failed to determine lot size for {symbol}")
             return
 
-        log_entry(f"Processing {strategy_config['TradeType']} for {symbol_suffix} with product type {strategy_config['product_type']}")
+        logging.info(f"Processing {strategy_config['TradeType']} for {symbol_suffix} with product type {strategy_config['product_type']}")
         
         matches = trading_list_df.loc[trading_list_df['SEM_TRADING_SYMBOL'] == symbol_suffix, 'SEM_SMST_SECURITY_ID']
         if matches.empty:
-            log_entry(f"No match found for {symbol_suffix}")
+            logging.error(f"No match found for {symbol_suffix}")
             return
         security_id = matches.values[0]
 
         # Check if position is already open
         positions = get_positions(dhan)
         if is_position_open(symbol_suffix, positions, exchange_segment):
-            log_entry(f"Position already open for {symbol_suffix}. Skipping new order.")
+            logging.info(f"Position already open for {symbol_suffix}. Skipping new order.")
             return
 
         # Check for max positions
@@ -448,30 +470,30 @@ def process_trade(dhan, symbol, strategy_config):
                 connection.close()
                 engine.dispose()
 
-        log_entry(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
-        log_entry(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
+        logging.info(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
+        logging.info(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
 
         if today_orders_count >= strategy_config["Max_Positions"]:
-            log_entry(f"Max positions limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_Positions']}. Skipping new order.")
+            logging.info(f"Max positions limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_Positions']}. Skipping new order.")
             return
 
         if total_position_size_today >= strategy_config["Max_PositionSize"]:
-            log_entry(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
+            logging.info(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
             return
 
         price_from_redis = get_price(security_id)
         if price_from_redis is not None:
             entry_price = price_from_redis
-            log_entry(f"Using price from Redis for {symbol_suffix}: {entry_price}")
+            logging.info(f"Using price from Redis for {symbol_suffix}: {entry_price}")
         else:
-            log_entry(f"Failed to get price from Redis for {symbol_suffix}. Falling back to yfinance.")
+            logging.info(f"Failed to get price from Redis for {symbol_suffix}. Falling back to yfinance.")
             try:
                 ticker = f'{symbol}.NS'
                 data = yf.download(ticker, period='1d', interval='1m')
                 entry_price = round(data['Close'].iloc[-1], 2)
-                log_entry(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
+                logging.info(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
             except Exception as e:
-                log_entry(f"Error downloading data from yfinance for {ticker}: {e}", "ERROR")
+                logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
                 return
 
         # Calculate ATR
@@ -480,12 +502,12 @@ def process_trade(dhan, symbol, strategy_config):
             data = yf.download(ticker, period='1mo', interval='1d')
             atr = round(calculate_atr(data), 2)
         except Exception as e:
-            log_entry(f"Error downloading data from yfinance for {ticker}: {e}", "ERROR")
-            log_entry(f"Error calculating ATR for {ticker}: {e}", "ERROR")
+            logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
+            logging.error(f"Error calculating ATR for {ticker}: {e}")
             return
 
         if atr == 0:
-            log_entry(f"ATR calculation resulted in zero, skipping trade for {symbol_suffix}", "ERROR")
+            logging.error(f"ATR calculation resulted in zero, skipping trade for {symbol_suffix}")
             return
 
         if strategy_config['TradeType'] == 'Long':
@@ -495,7 +517,7 @@ def process_trade(dhan, symbol, strategy_config):
             stop_loss = round((entry_price + strategy_config["ATR_SL"] * atr) / TICK_SIZE) * TICK_SIZE
             target = round((entry_price - strategy_config["ATR_Target"] * atr) / TICK_SIZE) * TICK_SIZE
         else:
-            log_entry(f"Unknown trade type {strategy_config['TradeType']} for {symbol_suffix}. Skipping.", "ERROR")
+            logging.error(f"Unknown trade type {strategy_config['TradeType']} for {symbol_suffix}. Skipping.")
             return
 
         sl_percentage = round(abs((entry_price - stop_loss) / entry_price) * 100, 2)
@@ -504,24 +526,24 @@ def process_trade(dhan, symbol, strategy_config):
         max_profit = round(abs((target - entry_price) * lot_size), 2)
         position_size = round(entry_price * lot_size, 2)
 
-        log_entry(f"Strategy: {strategy_config['Strategy']}")
-        log_entry(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
-        log_entry(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
-        log_entry(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
-        log_entry(f"Lot Size: {lot_size}, Position Size: {position_size}")
+        logging.info(f"Strategy: {strategy_config['Strategy']}")
+        logging.info(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
+        logging.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
+        logging.info(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
+        logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
 
-        cycle_time_in_mins = strategy_config.get('Cycle_time_in_mins')
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
                                strategy_config['TradeType'], strategy_config['Strategy'], 
                                strategy_config['product_type'], exchange_segment, 
-                               strategy_config['Holding_Period'], cycle_time_in_mins)
-        if response and response['status'] == 'success':
-            log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
+                               strategy_config['Holding_Period'],
+                               strategy_config.get('Cycle_time_in_mins'))
+        if response and response.get('status') == 'success':
+            logging.info(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
-            log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response['remarks']}", "ERROR")
+            logging.error(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}. Response: {response}")
     except Exception as e:
-        log_entry(f"Error in process_trade for symbol {symbol}: {str(e)}")
-        log_entry(f"Full error details: {traceback.format_exc()}")
+        logging.error(f"Error in process_trade for symbol {symbol}: {str(e)}")
+        logging.error(f"Full error details: {traceback.format_exc()}")
 
 def process_alert(alert_data):
     try:
@@ -529,51 +551,30 @@ def process_alert(alert_data):
         symbols = alert_data['stocks'].split(',')
         strategy_config = get_strategy_config(strategy_name)
         if strategy_config is None:
-            log_entry(f"No strategy configuration found for {strategy_name}")
+            logging.error(f"No strategy configuration found for {strategy_name}")
             return
         dhan = dhanhq(CLIENT_ID, ACCESS_TOKEN)
         for symbol in symbols:
             process_trade(dhan, symbol, strategy_config)
     except Exception as e:
-        log_entry(f"Error in process_alert: {str(e)}")
+        logging.error(f"Error in process_alert: {str(e)}")
 
 def check_redis_connection():
+    if redis_client is None:
+        logging.error("Redis client is not initialized.")
+        return False
     try:
         redis_client.ping()
-        log_entry("Successfully connected to Redis")
+        logging.info("Successfully connected to Redis")
         return True
-    except redis.ConnectionError:
-        log_entry("Failed to connect to Redis", "ERROR")
+    except redis.ConnectionError as e:
+        logging.error(f"Failed to connect to Redis: {e}")
         return False
-
-def check_for_new_alerts():
-    # This function should implement the logic to check for new trading alerts
-    # It could involve checking a database, an API, or some other data source
-    # For now, we'll just return None to indicate no new alerts
-    return None
-
-def main():
-    log_entry("Starting the trading system")
-    
-    while True:
-        try:
-            # Check for new alerts or signals
-            alert_data = check_for_new_alerts()
-            
-            if alert_data:
-                process_alert(alert_data)
-            
-            # Sleep for a short period before checking again
-            time.sleep(60)  # Sleep for 60 seconds
-        except Exception as e:
-            log_entry(f"Error in main loop: {str(e)}", "ERROR")
-            log_entry(f"Full error details: {traceback.format_exc()}", "ERROR")
-        
-        # You might want to add a condition to break the loop,
-        # e.g., at the end of the trading day
 
 if __name__ == "__main__":
     if check_redis_connection():
-        main()
+        # Your main logic here
+        logging.info("Starting trading logic...")
+        # For example: process_alert(some_alert_data)
     else:
-        log_entry("Exiting due to Redis connection failure", "ERROR")
+        logging.error("Exiting due to Redis connection failure")
