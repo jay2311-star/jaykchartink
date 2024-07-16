@@ -10,15 +10,9 @@ from sqlalchemy import create_engine
 import traceback
 import redis
 import pytz
-
-
-
-
-
-
+import time
 
 API_BASE_URL = "http://139.59.70.202:5000"  # Replace with your droplet's IP if different
-
 
 # Your login credentials
 username = "c.jaykrishnan@gmail.com"
@@ -74,9 +68,11 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period is included
+                # Ensure Holding_Period and Cycle_time_in_mins are included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
+                if 'Cycle_time_in_mins' not in config:
+                    config['Cycle_time_in_mins'] = None  # Default to None if not specified
                 return config
             return None
         finally:
@@ -237,7 +233,7 @@ def check_sector_industry(sector, industry, strategy_config):
     industry_match = not allowed_industries or industry in allowed_industries
     return sector_match or industry_match
 
-def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period):
+def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period, cycle_time_in_mins):
     try:
         log_entry("=" * 50)
         log_entry(f"Attempting to place order for {symbol}")
@@ -253,6 +249,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"  Strategy Key: {strategy_key}")
         log_entry(f"  Exchange Segment: {exchange_segment}")
         log_entry(f"  Holding Period: {holding_period}")
+        log_entry(f"  Cycle Time in Minutes: {cycle_time_in_mins}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
 
@@ -284,25 +281,38 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             log_entry("Order placement successful")
             
             # Calculate planned_exit_datetime
-            entry_date = datetime.now().date()
+            entry_time = datetime.now(pytz.timezone('Asia/Kolkata'))
             planned_exit = None
             
-            if holding_period.lower() == 'day':
-                planned_exit = entry_date + timedelta(days=1)
+            if holding_period.lower() == 'minute':
+                if cycle_time_in_mins is not None and cycle_time_in_mins > 0:
+                    planned_exit = entry_time + timedelta(minutes=cycle_time_in_mins)
+                    log_entry(f"Planned exit time set to {cycle_time_in_mins} minutes after entry")
+                else:
+                    log_entry(f"Invalid cycle_time_in_mins: {cycle_time_in_mins}. Using default day holding period.", "WARNING")
+                    planned_exit = entry_time.date() + timedelta(days=1)
+            elif holding_period.lower() == 'day':
+                planned_exit = entry_time.date() + timedelta(days=1)
             elif holding_period.lower() == 'week':
-                planned_exit = entry_date + timedelta(days=5)
+                planned_exit = entry_time.date() + timedelta(days=5)
             elif holding_period.lower() == 'month':
-                planned_exit = entry_date + timedelta(days=20)
+                planned_exit = entry_time.date() + timedelta(days=20)
             else:
-                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}", "WARNING")
+                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}. Using default day holding period.", "WARNING")
+                planned_exit = entry_time.date() + timedelta(days=1)
 
             planned_exit_datetime = None
             if planned_exit:
-                planned_exit_datetime = datetime.combine(planned_exit, datetime.strptime("15:15:00", "%H:%M:%S").time())
+                if isinstance(planned_exit, datetime):
+                    planned_exit_datetime = planned_exit
+                else:
+                    planned_exit_datetime = datetime.combine(planned_exit, datetime.strptime("15:15:00", "%H:%M:%S").time())
                 planned_exit_datetime = pytz.timezone('Asia/Kolkata').localize(planned_exit_datetime)
 
+            log_entry(f"Planned exit datetime: {planned_exit_datetime}")
+
             trade_entry = {
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'timestamp': entry_time.strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
                 'strategy': strategy_key,
                 'action': trade_type,
@@ -317,6 +327,9 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 'target': target,
                 'order_status': 'open',
                 'response': response,
+
+                ##
+
                 'max_profit': abs(target - entry_price) * lot_size,
                 'max_loss': abs(stop_loss - entry_price) * lot_size,
                 'trade_type': trade_type,
@@ -345,7 +358,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"An error occurred while placing order: {str(e)}", "ERROR")
         log_entry(f"Error details: {traceback.format_exc()}", "ERROR")
         return None
-        
+
 def get_positions(dhan):
     try:
         log_entry("Retrieving current positions")
@@ -497,10 +510,11 @@ def process_trade(dhan, symbol, strategy_config):
         log_entry(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
         log_entry(f"Lot Size: {lot_size}, Position Size: {position_size}")
 
+        cycle_time_in_mins = strategy_config.get('Cycle_time_in_mins')
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
                                strategy_config['TradeType'], strategy_config['Strategy'], 
                                strategy_config['product_type'], exchange_segment, 
-                               strategy_config['Holding_Period'])
+                               strategy_config['Holding_Period'], cycle_time_in_mins)
         if response and response['status'] == 'success':
             log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
@@ -531,6 +545,32 @@ def check_redis_connection():
     except redis.ConnectionError:
         log_entry("Failed to connect to Redis", "ERROR")
         return False
+
+def check_for_new_alerts():
+    # This function should implement the logic to check for new trading alerts
+    # It could involve checking a database, an API, or some other data source
+    # For now, we'll just return None to indicate no new alerts
+    return None
+
+def main():
+    log_entry("Starting the trading system")
+    
+    while True:
+        try:
+            # Check for new alerts or signals
+            alert_data = check_for_new_alerts()
+            
+            if alert_data:
+                process_alert(alert_data)
+            
+            # Sleep for a short period before checking again
+            time.sleep(60)  # Sleep for 60 seconds
+        except Exception as e:
+            log_entry(f"Error in main loop: {str(e)}", "ERROR")
+            log_entry(f"Full error details: {traceback.format_exc()}", "ERROR")
+        
+        # You might want to add a condition to break the loop,
+        # e.g., at the end of the trading day
 
 if __name__ == "__main__":
     if check_redis_connection():
