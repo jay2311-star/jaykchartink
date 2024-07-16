@@ -5,23 +5,13 @@ import json
 import requests
 from dhanhq import dhanhq
 import yfinance as yf
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 import traceback
 import redis
 import pytz
-import logging
-from redis import Redis, ConnectionError, RedisError
 
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
-ist = pytz.timezone('Asia/Kolkata')
-
-def get_ist_timestamp():
-    return datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S')
 
 
 
@@ -56,17 +46,12 @@ TICK_SIZE = 0.05  # Tick size for most Indian stocks
 CLIENT_ID = os.getenv('DHAN_CLIENT_ID')
 ACCESS_TOKEN = os.getenv('DHAN_ACCESS_TOKEN')
 
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_RETRY_ATTEMPTS = 3
-REDIS_RETRY_DELAY = 1  
-
-
-def get_redis_client():
-    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+# Redis connection details
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
 
 # Create a Redis client
-# redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 def get_db_connection():
     try:
@@ -89,11 +74,9 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period and Cycle_time_in_mins are included
+                # Ensure Holding_Period is included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
-                if 'Cycle_time_in_mins' not in config:
-                    config['Cycle_time_in_mins'] = None  # Default to None if not specified
                 return config
             return None
         finally:
@@ -217,21 +200,19 @@ def save_trade_log_to_mysql(trade_entries):
         print("Failed to connect to the database. Trade log not saved.")
 
 def get_price(security_id):
-    redis_client = get_redis_client()
-    for attempt in range(REDIS_RETRY_ATTEMPTS):
-        try:
-            price_data = redis_client.hgetall(f"price:{security_id}")
-            if price_data and 'latest_price' in price_data:
-                return float(price_data['latest_price'])
-            logging.warning(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
-            return None
-        except RedisError as e:
-            logging.error(f"Redis error while fetching price for security ID {security_id}: {e}")
-            if attempt < REDIS_RETRY_ATTEMPTS - 1:
-                time.sleep(REDIS_RETRY_DELAY)
-            else:
-                return None
-    return None
+    try:
+        response = requests.get(f"{API_BASE_URL}/price/{security_id}")
+        if response.status_code == 200:
+            price_data = response.json()
+            latest_price = price_data.get('latest_price')
+            if latest_price:
+                return float(latest_price)
+        else:
+            print(f"Failed to get price for security_id {security_id}. Status code: {response.status_code}")
+        return None
+    except requests.RequestException as e:
+        print(f"Error fetching price: {e}")
+        return None
 
 def within_trading_hours(start_time, end_time):
     current_time = datetime.now().time()
@@ -256,7 +237,7 @@ def check_sector_industry(sector, industry, strategy_config):
     industry_match = not allowed_industries or industry in allowed_industries
     return sector_match or industry_match
 
-def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period, cycle_time_in_mins):
+def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period):
     try:
         log_entry("=" * 50)
         log_entry(f"Attempting to place order for {symbol}")
@@ -272,7 +253,6 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         log_entry(f"  Strategy Key: {strategy_key}")
         log_entry(f"  Exchange Segment: {exchange_segment}")
         log_entry(f"  Holding Period: {holding_period}")
-        log_entry(f"  Cycle Time in Minutes: {cycle_time_in_mins}")
 
         transaction_type = BUY if trade_type == 'Long' else SELL
 
@@ -304,46 +284,25 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             log_entry("Order placement successful")
             
             # Calculate planned_exit_datetime
-            entry_datetime = datetime.now(ist)
+            entry_date = datetime.now().date()
             planned_exit = None
             
-            log_entry(f"Calculating planned exit for holding period: {holding_period}")
-            
-            if holding_period.lower() == 'minute':
-                if cycle_time_in_mins is not None:
-                    minutes_to_add = int(cycle_time_in_mins) * 5
-                    planned_exit = entry_datetime + timedelta(minutes=minutes_to_add)
-                    log_entry(f"Using Cycle_time_in_mins: {cycle_time_in_mins}, adding {minutes_to_add} minutes")
-                else:
-                    log_entry("Cycle_time_in_mins not provided for 'minute' holding period. Using default of 5 minutes.", "WARNING")
-                    planned_exit = entry_datetime + timedelta(minutes=5)
-            elif holding_period.lower() == 'day':
-                planned_exit = entry_datetime.date() + timedelta(days=1)
+            if holding_period.lower() == 'day':
+                planned_exit = entry_date + timedelta(days=1)
             elif holding_period.lower() == 'week':
-                planned_exit = entry_datetime.date() + timedelta(days=5)
+                planned_exit = entry_date + timedelta(days=5)
             elif holding_period.lower() == 'month':
-                planned_exit = entry_datetime.date() + timedelta(days=20)
+                planned_exit = entry_date + timedelta(days=20)
             else:
-                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}. Using default of 1 day.", "WARNING")
-                planned_exit = entry_datetime.date() + timedelta(days=1)
+                log_entry(f"Unknown holding period '{holding_period}' for trade {symbol}", "WARNING")
 
             planned_exit_datetime = None
             if planned_exit:
-                if isinstance(planned_exit, datetime):
-                    planned_exit_datetime = planned_exit
-                else:
-                    planned_exit_datetime = datetime.combine(planned_exit, time(15, 15))
-                planned_exit_datetime = ist.localize(planned_exit_datetime)
-                
-                # Ensure planned exit is not in the past
-                if planned_exit_datetime <= entry_datetime:
-                    planned_exit_datetime += timedelta(days=1)
-                    log_entry(f"Adjusted planned exit to next day: {planned_exit_datetime}", "WARNING")
-
-            log_entry(f"Calculated planned exit datetime: {planned_exit_datetime}")
+                planned_exit_datetime = datetime.combine(planned_exit, datetime.strptime("15:15:00", "%H:%M:%S").time())
+                planned_exit_datetime = pytz.timezone('Asia/Kolkata').localize(planned_exit_datetime)
 
             trade_entry = {
-                'timestamp': entry_datetime.strftime('%Y-%m-%d %H:%M:%S'),
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'symbol': symbol,
                 'strategy': strategy_key,
                 'action': trade_type,
@@ -409,14 +368,9 @@ def is_position_open(symbol, positions, exchange_segment):
 
 def process_trade(dhan, symbol, strategy_config):
     try:
-        if strategy_config.get('On_Off', '').lower() != 'on':
-            log_entry(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
-            return
-
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
             log_entry(f"Outside trading hours for {symbol}")
             return
-
 
         sector, industry = get_sector_and_industry(symbol)
         if not check_sector_industry(sector, industry, strategy_config):
@@ -546,12 +500,11 @@ def process_trade(dhan, symbol, strategy_config):
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
                                strategy_config['TradeType'], strategy_config['Strategy'], 
                                strategy_config['product_type'], exchange_segment, 
-                               strategy_config['Holding_Period'],
-                               strategy_config.get('Cycle_time_in_mins'))
-        if response and response.get('status') == 'success':
+                               strategy_config['Holding_Period'])
+        if response and response['status'] == 'success':
             log_entry(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
-            log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response}", "ERROR")
+            log_entry(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}: {response['remarks']}", "ERROR")
     except Exception as e:
         log_entry(f"Error in process_trade for symbol {symbol}: {str(e)}")
         log_entry(f"Full error details: {traceback.format_exc()}")
