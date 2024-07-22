@@ -9,17 +9,11 @@ from datetime import datetime, timedelta, time
 from sqlalchemy import create_engine
 import traceback
 import redis
-import pytz
 import logging
 from redis import Redis, ConnectionError, RedisError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-ist = pytz.timezone('Asia/Kolkata')
-
-def get_ist_timestamp():
-    return datetime.now(ist).strftime('%Y-%m-%d %H:%M:%S')
 
 API_BASE_URL = "http://139.59.70.202:5000"  # Replace with your droplet's IP if different
 
@@ -45,9 +39,9 @@ STOP_LOSS_MARKET = "STOP_LOSS_MARKET"
 MARGIN = "MARGIN"
 TICK_SIZE = 0.05  # Tick size for most Indian stocks
 
-# Dhan API client credentials
-CLIENT_ID = os.getenv('DHAN_CLIENT_ID')
-ACCESS_TOKEN = os.getenv('DHAN_ACCESS_TOKEN')
+# Access Dhan API client credentials from environment variables
+CLIENT_ID = os.getenv('DHAN_API_CLIENT_ID')
+ACCESS_TOKEN = os.getenv('DHAN_API_ACCESS_TOKEN')
 
 # Redis connection details
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
@@ -303,7 +297,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         if response and response['status'] == 'success':
             logging.info("Order placement successful")
             
-            entry_datetime = datetime.now(ist)
+            entry_datetime = datetime.now()
             planned_exit = None
             
             if holding_period.lower() == 'minute':
@@ -320,15 +314,12 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 planned_exit = (entry_datetime + timedelta(days=20)).replace(hour=15, minute=15, second=0, microsecond=0)
             else:
                 planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
-                                                                
 
-                                                                            ##
-
-
-                                                                            
             # Ensure planned exit is not in the past
             if planned_exit <= entry_datetime:
-                planned_exit += timedelta(days=1)
+
+##
+planned_exit += timedelta(days=1)
 
             logging.info(f"Calculated planned exit datetime: {planned_exit}")
 
