@@ -317,9 +317,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
 
             # Ensure planned exit is not in the past
             if planned_exit <= entry_datetime:
-
-##
-planned_exit += timedelta(days=1)
+                planned_exit += timedelta(days=1)
 
             logging.info(f"Calculated planned exit datetime: {planned_exit}")
 
@@ -448,7 +446,7 @@ def process_trade(dhan, symbol, strategy_config):
             try:
                 query = """
                 SELECT COUNT(*) as today_orders_count, 
-                       SUM(position_size) as total_position_size_today
+                    SUM(position_size) as total_position_size_today
                 FROM trades 
                 WHERE DATE(timestamp) = %s AND strategy = %s AND order_status = 'open'
                 """
@@ -524,10 +522,10 @@ def process_trade(dhan, symbol, strategy_config):
         logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
 
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
-                               strategy_config['TradeType'], strategy_config['Strategy'], 
-                               strategy_config['product_type'], exchange_segment, 
-                               strategy_config['Holding_Period'],
-                               strategy_config.get('Cycle_time_in_mins'))
+                            strategy_config['TradeType'], strategy_config['Strategy'], 
+                            strategy_config['product_type'], exchange_segment, 
+                            strategy_config['Holding_Period'],
+                            strategy_config.get('Cycle_time_in_mins'))
         if response and response.get('status') == 'success':
             logging.info(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
