@@ -82,16 +82,20 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period and Cycle_time_in_mins are included
+                # Ensure Holding_Period, Cycle_time_in_mins, and Max_Stock_Position_Size are included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
                 if 'Cycle_time_in_mins' not in config:
                     config['Cycle_time_in_mins'] = None  # Default to None if not specified
+                if 'Max_Stock_Position_Size' not in config:
+                    config['Max_Stock_Position_Size'] = None  # Default to None if not specified
                 return config
             return None
         finally:
             engine.dispose()
     return None
+
+
 
 def get_trading_list():
     engine = get_db_connection()
@@ -521,11 +525,30 @@ def process_trade(dhan, symbol, strategy_config):
         max_profit = round(abs((target - entry_price) * lot_size), 2)
         position_size = round(entry_price * lot_size, 2)
 
+        # Check for Max_Stock_Position_Size constraint
+        max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
+        if max_stock_position_size is not None and position_size > max_stock_position_size:
+            logging.info(f"Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size} for {symbol_suffix}. Adjusting lot size.")
+            adjusted_lot_size = int(max_stock_position_size / entry_price)
+            if adjusted_lot_size < 1:
+                logging.info(f"Adjusted lot size would be less than 1 for {symbol_suffix}. Skipping trade.")
+                return
+            lot_size = adjusted_lot_size
+            position_size = round(entry_price * lot_size, 2)
+            max_loss = round(abs((entry_price - stop_loss) * lot_size), 2)
+            max_profit = round(abs((target - entry_price) * lot_size), 2)
+            logging.info(f"Adjusted lot size to {lot_size}, new position size: {position_size}")
+
         logging.info(f"Strategy: {strategy_config['Strategy']}")
         logging.info(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
         logging.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
         logging.info(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
         logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
+
+        # Check if the adjusted position size still fits within the overall strategy limits
+        if total_position_size_today + position_size > strategy_config["Max_PositionSize"]:
+            logging.info(f"Adding this position would exceed Max_PositionSize for strategy {strategy_config['Strategy']}. Skipping trade.")
+            return
 
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
                             strategy_config['TradeType'], strategy_config['Strategy'], 
