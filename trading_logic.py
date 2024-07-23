@@ -82,11 +82,13 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period and Cycle_time_in_mins are included
+                # Ensure Holding_Period, Cycle_time_in_mins, and Max_Stock_Position_Size are included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
                 if 'Cycle_time_in_mins' not in config:
                     config['Cycle_time_in_mins'] = None  # Default to None if not specified
+                if 'Max_Stock_Position_Size' not in config:
+                    config['Max_Stock_Position_Size'] = None  # Default to None if not specified
                 return config
             return None
         finally:
@@ -402,6 +404,30 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Outside trading hours for {symbol}")
             return
 
+        position_size = round(entry_price * lot_size, 2)
+
+        # Check if the position size exceeds the maximum allowed for a single stock
+        if strategy_config['Max_Stock_Position_Size'] is not None:
+            if position_size > strategy_config['Max_Stock_Position_Size']:
+                logging.info(f"Position size {position_size} for {symbol_suffix} exceeds maximum allowed {strategy_config['Max_Stock_Position_Size']}. Skipping trade.")
+                return
+
+        logging.info(f"Strategy: {strategy_config['Strategy']}")
+        logging.info(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
+        logging.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
+        logging.info(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
+        logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
+
+
+
+        
+
+
+
+        
+
+
+        
         sector, industry = get_sector_and_industry(symbol)
         if not check_sector_industry(sector, industry, strategy_config):
             logging.info(f"Sector/Industry mismatch for {symbol}")
