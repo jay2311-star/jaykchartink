@@ -208,26 +208,19 @@ def save_trade_log_to_mysql(trade_entries):
         logging.error("Failed to connect to the database. Trade log not saved.")
 
 def get_price(security_id):
-    if redis_client is None:
-        logging.error("Redis client is not initialized. Cannot fetch price.")
+    try:
+        response = requests.get(f"{API_BASE_URL}/price/{security_id}")
+        if response.status_code == 200:
+            price_data = response.json()
+            latest_price = price_data.get('latest_price')
+            if latest_price:
+                return float(latest_price)
+        else:
+            print(f"Failed to get price for security_id {security_id}. Status code: {response.status_code}")
         return None
-
-    for attempt in range(REDIS_RETRY_ATTEMPTS):
-        try:
-            price_data = redis_client.hgetall(f"price:{security_id}")
-            if price_data and 'latest_price' in price_data:
-                return float(price_data['latest_price'])
-            logging.warning(f"No price data found for security ID {security_id} in Redis. Available data: {price_data}")
-            return None
-        except RedisError as e:
-            logging.error(f"Redis error while fetching price for security ID {security_id}: {e}")
-            if attempt < REDIS_RETRY_ATTEMPTS - 1:
-                logging.info(f"Retrying in {REDIS_RETRY_DELAY} seconds...")
-                time.sleep(REDIS_RETRY_DELAY)
-            else:
-                logging.error("Max retries reached. Falling back to alternative price source.")
-                return None
-    return None
+    except requests.RequestException as e:
+        print(f"Error fetching price: {e}")
+        return None
 
 def within_trading_hours(start_time, end_time):
     current_time = datetime.now().time()
