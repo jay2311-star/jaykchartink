@@ -404,30 +404,6 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Outside trading hours for {symbol}")
             return
 
-        position_size = round(entry_price * lot_size, 2)
-
-        # Check if the position size exceeds the maximum allowed for a single stock
-        if strategy_config['Max_Stock_Position_Size'] is not None:
-            if position_size > strategy_config['Max_Stock_Position_Size']:
-                logging.info(f"Position size {position_size} for {symbol_suffix} exceeds maximum allowed {strategy_config['Max_Stock_Position_Size']}. Skipping trade.")
-                return
-
-        logging.info(f"Strategy: {strategy_config['Strategy']}")
-        logging.info(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
-        logging.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
-        logging.info(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
-        logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
-
-
-
-        
-
-
-
-        
-
-
-        
         sector, industry = get_sector_and_industry(symbol)
         if not check_sector_industry(sector, industry, strategy_config):
             logging.info(f"Sector/Industry mismatch for {symbol}")
@@ -440,9 +416,9 @@ def process_trade(dhan, symbol, strategy_config):
             return
 
         if strategy_config['instrument_type'] == 'FUT':
-            symbol_suffix = f"{symbol}-Jul2024-FUT"
+            symbol_suffix = f"{symbol}-{get_current_expiry()}-FUT"
             exchange_segment = NSE_FNO
-            lot_size = lots_df.loc[lots_df['Symbol'] == symbol, 'Jul'].values[0] if not lots_df.empty else None
+            lot_size = lots_df.loc[lots_df['Symbol'] == symbol, get_current_month()].values[0] if not lots_df.empty else None
         elif strategy_config['instrument_type'] == 'EQ':
             symbol_suffix = symbol
             exchange_segment = NSE_EQ
@@ -469,27 +445,124 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Position already open for {symbol_suffix}. Skipping new order.")
             return
 
-        # Check for max positions
+        # Check for max positions and total position size
         today = datetime.now().strftime('%Y-%m-%d')
-        engine = get_db_connection()
-        if engine is not None:
-            connection = engine.raw_connection()
-            cursor = connection.cursor()
-            try:
-                query = """
-                SELECT COUNT(*) as today_orders_count, 
-                    SUM(position_size) as total_position_size_today
-                FROM trades 
-                WHERE DATE(timestamp) = %s AND strategy = %s AND order_status = 'open'
-                """
-                cursor.execute(query, (today, strategy_config['Strategy']))
-                result = cursor.fetchone()
-                today_orders_count = result[0] or 0
-                total_position_size_today = result[1] or 0
-            finally:
-                cursor.close()
-                connection.close()
-                engine.dispose()
+        today_orders_count, total_position_size_today = get_today_orders_info(strategy_config['Strategy'], today)
+
+        logging.info(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
+        logging.info(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
+
+        if today_orders_count >= strategy_config["Max_Positions"]:
+            logging.info(f"Max positions limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_Positions']}. Skipping new order.")
+            return
+
+        if total_position_size_today >= strategy_config["Max_PositionSize"]:
+            logging.info(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
+            return
+
+        entry_price = get_price(security_id, symbol_suffix)
+        if entry_price is None:
+            logging.error(f"Failed to get price for {symbol_suffix}. Skipping trade.")
+            return
+
+        # Calculate ATR
+        atr = calculate_atr(symbol, '1mo', '1d')
+        if atr == 0:
+            logging.error(f"ATR calculation resulted in zero, skipping trade for {symbol_suffix}")
+            return
+
+        if strategy_config['TradeType'] == 'Long':
+            stop_loss = round((entry_price - strategy_config["ATR_SL"] * atr) / TICK_SIZE) * TICK_SIZE
+            target = round((entry_price + strategy_config["ATR_Target"] * atr) / TICK_SIZE) * TICK_SIZE
+        elif strategy_config['TradeType'] == 'Short':
+            stop_loss = round((entry_price + strategy_config["ATR_SL"] * atr) / TICK_SIZE) * TICK_SIZE
+            target = round((entry_price - strategy_config["ATR_Target"] * atr) / TICK_SIZE) * TICK_SIZE
+        else:
+            logging.error(f"Unknown trade type {strategy_config['TradeType']} for {symbol_suffix}. Skipping.")
+            return
+
+        sl_percentage = round(abs((entry_price - stop_loss) / entry_price) * 100, 2)
+        target_percentage = round(abs((target - entry_price) / entry_price) * 100, 2)
+        max_loss = round(abs((entry_price - stop_loss) * lot_size), 2)
+        max_profit = round(abs((target - entry_price) * lot_size), 2)
+        position_size = round(entry_price * lot_size, 2)
+
+        # Check if the position size exceeds the maximum allowed for a single stock
+        if strategy_config['Max_Stock_Position_Size'] is not None:
+            if position_size > strategy_config['Max_Stock_Position_Size']:
+                logging.info(f"Position size {position_size} for {symbol_suffix} exceeds maximum allowed {strategy_config['Max_Stock_Position_Size']}. Skipping trade.")
+                return
+
+        logging.info(f"Strategy: {strategy_config['Strategy']}")
+        logging.info(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
+        logging.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
+        logging.info(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
+        logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
+
+        response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
+                            strategy_config['TradeType'], strategy_config['Strategy'], 
+                            strategy_config['product_type'], exchange_segment, 
+                            strategy_config['Holding_Period'],
+                            strategy_config.get('Cycle_time_in_mins'))
+        if response and response.get('status') == 'success':
+            logging.info(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
+        else:
+            logging.error(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}. Response: {response}")
+    except Exception as e:
+        logging.error(f"Error in process_trade for symbol {symbol}: {str(e)}")
+        logging.error(f"Full error details: {traceback.format_exc()}")
+
+def within_trading_hours(start_time, end_time):
+    current_time = datetime.now().time()
+    start_time = datetime.strptime(start_time, "%H:%M:%S").time()
+    end_time = datetime.strptime(end_time, "%H:%M:%S").time()
+    return start_time <= current_time <= end_time
+
+def get_current_expiry():
+    today = datetime.now()
+    last_thursday = today + timedelta((3 - today.weekday() + 7) % 7)
+    if today.month != last_thursday.month:
+        last_thursday = today + timedelta((3 - today.weekday() + 14) % 7)
+    return last_thursday.strftime("%b%Y").upper()
+
+def get_current_month():
+    return datetime.now().strftime("%b")
+
+def calculate_atr(symbol, period, interval):
+    try:
+        ticker = f'{symbol}.NS'
+        data = yf.download(ticker, period=period, interval=interval)
+        data['H-L'] = abs(data['High'] - data['Low'])
+        data['H-PC'] = abs(data['High'] - data['Close'].shift(1))
+        data['L-PC'] = abs(data['Low'] - data['Close'].shift(1))
+        data['TR'] = data[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+        data['ATR'] = data['TR'].rolling(window=14).mean()
+        return round(data['ATR'].iloc[-1], 2)
+    except Exception as e:
+        logging.error(f"Error calculating ATR for {symbol}: {e}")
+        return 0
+
+def get_today_orders_info(strategy, date):
+    engine = get_db_connection()
+    if engine is not None:
+        connection = engine.raw_connection()
+        cursor = connection.cursor()
+        try:
+            query = """
+            SELECT COUNT(*) as today_orders_count, 
+                SUM(position_size) as total_position_size_today
+            FROM trades 
+            WHERE DATE(timestamp) = %s AND strategy = %s AND order_status = 'open'
+            """
+            cursor.execute(query, (date, strategy))
+            result = cursor.fetchone()
+            return result[0] or 0, result[1] or 0
+        finally:
+            cursor.close()
+            connection.close()
+            engine.dispose()
+    return 0, 0
+
 
         logging.info(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
         logging.info(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
