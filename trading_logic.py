@@ -418,9 +418,9 @@ def process_trade(dhan, symbol, strategy_config):
             return
 
         if strategy_config['instrument_type'] == 'FUT':
-            symbol_suffix = f"{symbol}-Jul2024-FUT"
+            symbol_suffix = f"{symbol}-Aug2024-FUT"
             exchange_segment = NSE_FNO
-            lot_size = lots_df.loc[lots_df['Symbol'] == symbol, 'Jul'].values[0] if not lots_df.empty else None
+            lot_size = lots_df.loc[lots_df['Symbol'] == symbol, 'Aug'].values[0] if not lots_df.empty else None
         elif strategy_config['instrument_type'] == 'EQ':
             symbol_suffix = symbol
             exchange_segment = NSE_EQ
