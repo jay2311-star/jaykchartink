@@ -6,6 +6,8 @@ from dhanhq import dhanhq
 import yfinance as yf
 from datetime import datetime, timedelta, time
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 import traceback
 import redis
 import logging
@@ -143,52 +145,42 @@ def save_order_attempt_to_mysql(order_entry):
     engine = get_db_connection()
     if engine is not None:
         try:
-            connection = engine.raw_connection()
-            cursor = connection.cursor()
-            
-            insert_query = """
-            INSERT INTO place_order (
-                timestamp, symbol, strategy, security_id, quantity, price, order_type,
-                transaction_type, product_type, exchange_segment, order_status, response,
-                failure_reason, trade_type, stop_loss, target, position_size,
-                holding_period, cycle_time_in_mins, sector, industry, sector_in,
-                industry_in, instrument_type, start_time, stop_time, max_positions,
-                max_position_size, max_stock_position_size, atr, atr_sl_multiplier,
-                atr_target_multiplier, sl_percentage, target_percentage, max_loss,
-                max_profit, today_orders_count, total_position_size_today,
-                within_trading_hours, sector_industry_match, position_already_open
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s
-            )
-            """
-            cursor.execute(insert_query, (
-                order_entry['timestamp'], order_entry['symbol'], order_entry['strategy'],
-                order_entry['security_id'], order_entry['quantity'], order_entry['price'],
-                order_entry['order_type'], order_entry['transaction_type'], order_entry['product_type'],
-                order_entry['exchange_segment'], order_entry['order_status'], json.dumps(order_entry['response']),
-                order_entry['failure_reason'], order_entry['trade_type'], order_entry['stop_loss'],
-                order_entry['target'], order_entry['position_size'], order_entry['holding_period'],
-                order_entry['cycle_time_in_mins'], order_entry['sector'], order_entry['industry'],
-                order_entry['sector_in'], order_entry['industry_in'], order_entry['instrument_type'],
-                order_entry['start_time'], order_entry['stop_time'], order_entry['max_positions'],
-                order_entry['max_position_size'], order_entry['max_stock_position_size'],
-                order_entry['atr'], order_entry['atr_sl_multiplier'], order_entry['atr_target_multiplier'],
-                order_entry['sl_percentage'], order_entry['target_percentage'], order_entry['max_loss'],
-                order_entry['max_profit'], order_entry['today_orders_count'],
-                order_entry['total_position_size_today'], order_entry['within_trading_hours'],
-                order_entry['sector_industry_match'], order_entry['position_already_open']
-            ))
-            
-            connection.commit()
+            with engine.connect() as connection:
+                # Convert the order_entry dictionary to a format suitable for SQL insertion
+                insert_data = {
+                    key: json.dumps(value) if isinstance(value, (dict, list)) else value
+                    for key, value in order_entry.items()
+                }
+                
+                insert_query = """
+                INSERT INTO place_order (
+                    timestamp, symbol, strategy, security_id, quantity, price, order_type,
+                    transaction_type, product_type, exchange_segment, order_status, response,
+                    failure_reason, trade_type, stop_loss, target, position_size,
+                    holding_period, cycle_time_in_mins, sector, industry, sector_in,
+                    industry_in, instrument_type, start_time, stop_time, max_positions,
+                    max_position_size, max_stock_position_size, atr, atr_sl_multiplier,
+                    atr_target_multiplier, sl_percentage, target_percentage, max_loss,
+                    max_profit, today_orders_count, total_position_size_today,
+                    within_trading_hours, sector_industry_match, position_already_open
+                ) VALUES (
+                    :timestamp, :symbol, :strategy, :security_id, :quantity, :price, :order_type,
+                    :transaction_type, :product_type, :exchange_segment, :order_status, :response,
+                    :failure_reason, :trade_type, :stop_loss, :target, :position_size,
+                    :holding_period, :cycle_time_in_mins, :sector, :industry, :sector_in,
+                    :industry_in, :instrument_type, :start_time, :stop_time, :max_positions,
+                    :max_position_size, :max_stock_position_size, :atr, :atr_sl_multiplier,
+                    :atr_target_multiplier, :sl_percentage, :target_percentage, :max_loss,
+                    :max_profit, :today_orders_count, :total_position_size_today,
+                    :within_trading_hours, :sector_industry_match, :position_already_open
+                )
+                """
+                connection.execute(text(insert_query), insert_data)
+                connection.commit()
             logging.info(f"Order attempt for {order_entry['symbol']} saved to place_order table")
-        except Exception as e:
-            logging.error(f"Error saving order attempt to place_order table: {e}")
+        except SQLAlchemyError as e:
+            logging.error(f"Error saving order attempt to place_order table: {str(e)}")
         finally:
-            if connection.is_connected():
-                cursor.close()
-                connection.close()
             engine.dispose()
     else:
         logging.error("Failed to connect to the database. Order attempt not saved.")
@@ -577,7 +569,7 @@ def process_trade(dhan, symbol, strategy_config):
         order_entry['order_status'] = 'Error'
         order_entry['failure_reason'] = str(e)
         save_order_attempt_to_mysql(order_entry)
-
+        
 def process_alert(alert_data):
     try:
         strategy_name = alert_data['alert_name']
