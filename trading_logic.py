@@ -546,7 +546,7 @@ def process_trade(dhan, symbol, strategy_config):
         logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
 
         # Check if the adjusted position size still fits within the overall strategy limits
-        if total_position_size_today + position_size > strategy_config["Max_PositionSize"]:
+        if float(total_position_size_today) + position_size > float(strategy_config["Max_PositionSize"]):
             logging.info(f"Adding this position would exceed Max_PositionSize for strategy {strategy_config['Strategy']}. Skipping trade.")
             return
 
