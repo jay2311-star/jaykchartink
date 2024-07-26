@@ -96,8 +96,6 @@ def get_strategy_config(strategy_name):
             engine.dispose()
     return None
 
-
-
 def get_trading_list():
     engine = get_db_connection()
     if engine is not None:
@@ -293,7 +291,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         )
         logging.info(f"Dhan API Response:")
         logging.info(json.dumps(response, indent=2))
-##
+
         if response and response['status'] == 'success':
             logging.info("Order placement successful")
             
@@ -375,7 +373,6 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         logging.error(f"An error occurred while placing order: {str(e)}")
         logging.error(f"Error details: {traceback.format_exc()}")
         return None
-        
 
 def get_positions(dhan):
     try:
@@ -407,17 +404,13 @@ def is_position_open(symbol, strategy, engine):
         logging.error(f"Error checking for open position: {e}")
         return False
 
-
-
 def process_trade(dhan, symbol, strategy_config):
-
     try:
         engine = get_db_connection()
         if engine is None:
             logging.error("Failed to establish database connection")
             return
-            
-    try:
+
         if strategy_config.get('On_Off', '').lower() != 'on':
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
@@ -436,8 +429,6 @@ def process_trade(dhan, symbol, strategy_config):
         if trading_list_df is None or lots_df is None:
             logging.error("Failed to fetch trading list or lots data")
             return
-
-
 
         if strategy_config['instrument_type'] == 'FUT':
             symbol_suffix = f"{symbol}-Aug2024-FUT"
@@ -462,8 +453,6 @@ def process_trade(dhan, symbol, strategy_config):
             logging.error(f"No match found for {symbol_suffix}")
             return
         security_id = matches.values[0]
-
-
 
         # Check if position is already open
         positions = get_positions(dhan)
@@ -504,6 +493,8 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
             return
 
+
+       
         price_from_redis = get_price(security_id)
         if price_from_redis is not None:
             entry_price = price_from_redis
@@ -583,8 +574,6 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
             logging.error(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}. Response: {response}")
-
-    
     except Exception as e:
         logging.error(f"Error in process_trade for symbol {symbol}: {str(e)}")
         logging.error(f"Full error details: {traceback.format_exc()}")
