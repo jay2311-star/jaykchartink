@@ -542,12 +542,26 @@ def process_trade(dhan, symbol, strategy_config):
 
         # Check for Max_Stock_Position_Size constraint
         max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
-        if max_stock_position_size is not None and position_size > max_stock_position_size:
-            logging.info(f"Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size} for {symbol_suffix}. Adjusting lot size.")
-            adjusted_lot_size = int(max_stock_position_size / entry_price)
-            if adjusted_lot_size < 1:
-                logging.info(f"Adjusted lot size would be less than 1 for {symbol_suffix}. Skipping trade.")
-                return
+      
+
+            if max_stock_position_size is not None and position_size > max_stock_position_size:
+    logging.info(f"Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size} for {symbol_suffix}. Skipping trade.")
+    
+    # Log in place_order table
+    log_data = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'symbol': symbol_suffix,
+        'strategy': strategy_config['Strategy'],
+        'order_status': 'skipped',
+        'failure_reason': f"Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size}"
+    }
+    insert_place_order_log(connection, log_data)
+    
+    return  # Skip the trade
+
+    
+
+            
             lot_size = adjusted_lot_size
             position_size = round(entry_price * lot_size, 2)
             max_loss = round(abs((entry_price - stop_loss) * lot_size), 2)
