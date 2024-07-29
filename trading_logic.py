@@ -446,9 +446,38 @@ def process_trade(dhan, symbol, strategy_config):
     }
 
     try:
-        # ... [previous checks remain the same] ...
+        entry_price = None
+        price_from_redis = get_price(security_id)
+        if price_from_redis is not None:
+            entry_price = price_from_redis
+            logging.info(f"Using price from Redis for {symbol_suffix}: {entry_price}")
+        else:
+            logging.info(f"Failed to get price from Redis for {symbol_suffix}. Falling back to yfinance.")
+            try:
+                ticker = f'{symbol}.NS'
+                data = yf.download(ticker, period='1d', interval='1m')
+                if not data.empty:
+                    entry_price = round(data['Close'].iloc[-1], 2)
+                    logging.info(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
+                else:
+                    raise ValueError("No data returned from yfinance")
+            except Exception as e:
+                log_data['order_status'] = 'error'
+                log_data['failure_reason'] = f'Failed to get price: {str(e)}'
+                insert_place_order_log(engine, log_data)
+                logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
+                return
 
-        # Calculate initial position size
+        if entry_price is None:
+            log_data['order_status'] = 'error'
+            log_data['failure_reason'] = 'Failed to get valid price'
+            insert_place_order_log(engine, log_data)
+            logging.error(f"Failed to get valid price for {symbol_suffix}")
+            return
+
+        log_data['price'] = entry_price
+
+        # Calculate position size
         position_size = round(entry_price * lot_size, 2)
         log_data['position_size'] = position_size
 
