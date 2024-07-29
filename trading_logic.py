@@ -7,6 +7,7 @@ from dhanhq import dhanhq
 import yfinance as yf
 from datetime import datetime, timedelta, time
 
+
 import traceback
 import redis
 import logging
@@ -392,13 +393,13 @@ def is_position_open(symbol, strategy, engine):
     try:
         with engine.connect() as connection:
             query = """
-                SELECT COUNT(*) as open_positions
-                FROM trades
-                WHERE symbol = %s
-                AND strategy = %s
-                AND order_status = 'open'
+            SELECT COUNT(*) as open_positions
+            FROM trades
+            WHERE symbol = :symbol
+            AND strategy = :strategy
+            AND order_status = 'open'
             """
-            result = connection.execute(query, (symbol, strategy)).fetchone()
+            result = connection.execute(text(query), {"symbol": symbol, "strategy": strategy}).fetchone()
             return result['open_positions'] > 0
     except Exception as e:
         logging.error(f"Error checking for open position: {e}")
