@@ -395,14 +395,17 @@ def is_position_open(symbol, strategy, engine):
             query = """
             SELECT COUNT(*) as open_positions
             FROM trades
-            WHERE symbol = :symbol
-            AND strategy = :strategy
+            WHERE symbol = %s
+            AND strategy = %s
             AND order_status = 'open'
             """
-            result = connection.execute(text(query), {"symbol": symbol, "strategy": strategy}).fetchone()
-            return result['open_positions'] > 0
+            logging.info(f"Executing query: {query} with params: {symbol}, {strategy}")
+            result = connection.execute(query, (symbol, strategy)).fetchone()
+            logging.info(f"Query result: {result}")
+            return result[0] > 0
     except Exception as e:
         logging.error(f"Error checking for open position: {e}")
+        logging.error(f"Error details: {traceback.format_exc()}")
         return False
 
 def process_trade(dhan, symbol, strategy_config):
