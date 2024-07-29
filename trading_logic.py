@@ -210,6 +210,53 @@ def save_trade_log_to_mysql(trade_entries):
     else:
         logging.error("Failed to connect to the database. Trade log not saved.")
 
+
+def save_order_attempt_to_mysql(order_entry):
+    engine = get_db_connection()
+    if engine is not None:
+        try:
+            with engine.connect() as connection:
+                # Convert the order_entry dictionary to a format suitable for SQL insertion
+                insert_data = {
+                    key: json.dumps(value) if isinstance(value, (dict, list)) else value
+                    for key, value in order_entry.items()
+                }
+                
+                insert_query = """
+                INSERT INTO place_order (
+                    timestamp, symbol, strategy, security_id, quantity, price, order_type,
+                    transaction_type, product_type, exchange_segment, order_status, response,
+                    failure_reason, trade_type, stop_loss, target, position_size,
+                    holding_period, cycle_time_in_mins, sector, industry, sector_in,
+                    industry_in, instrument_type, start_time, stop_time, max_positions,
+                    max_position_size, max_stock_position_size, atr, atr_sl_multiplier,
+                    atr_target_multiplier, sl_percentage, target_percentage, max_loss,
+                    max_profit, today_orders_count, total_position_size_today,
+                    within_trading_hours, sector_industry_match, position_already_open
+                ) VALUES (
+                    :timestamp, :symbol, :strategy, :security_id, :quantity, :price, :order_type,
+                    :transaction_type, :product_type, :exchange_segment, :order_status, :response,
+                    :failure_reason, :trade_type, :stop_loss, :target, :position_size,
+                    :holding_period, :cycle_time_in_mins, :sector, :industry, :sector_in,
+                    :industry_in, :instrument_type, :start_time, :stop_time, :max_positions,
+                    :max_position_size, :max_stock_position_size, :atr, :atr_sl_multiplier,
+                    :atr_target_multiplier, :sl_percentage, :target_percentage, :max_loss,
+                    :max_profit, :today_orders_count, :total_position_size_today,
+                    :within_trading_hours, :sector_industry_match, :position_already_open
+                )
+                """
+                connection.execute(text(insert_query), insert_data)
+                connection.commit()
+            logging.info(f"Order attempt for {order_entry['symbol']} saved to place_order table")
+        except SQLAlchemyError as e:
+            logging.error(f"Error saving order attempt to place_order table: {str(e)}")
+        finally:
+            engine.dispose()
+    else:
+        logging.error("Failed to connect to the database. Order attempt not saved.")
+
+
+
 def get_price(security_id):
     try:
         response = requests.get(f"{API_BASE_URL}/price/{security_id}")
@@ -248,35 +295,34 @@ def check_sector_industry(sector, industry, strategy_config):
     industry_match = not allowed_industries or industry in allowed_industries
     return sector_match or industry_match
 
-def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period, cycle_time_in_mins):
+def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, target, trade_type, strategy_key, product_type, exchange_segment, holding_period, cycle_time_in_mins, order_entry):
     try:
         logging.info("=" * 50)
         logging.info(f"Attempting to place order for {symbol}")
-        logging.info(f"Order details:")
-        logging.info(f"  Security ID: {security_id}")
-        logging.info(f"  Symbol: {symbol}")
-        logging.info(f"  Quantity: {lot_size}")
-        logging.info(f"  Entry Price: {entry_price}")
-        logging.info(f"  Stop Loss: {stop_loss}")
-        logging.info(f"  Target: {target}")
-        logging.info(f"  Trade Type: {trade_type}")
-        logging.info(f"  Product Type: {product_type}")
-        logging.info(f"  Strategy Key: {strategy_key}")
-        logging.info(f"  Exchange Segment: {exchange_segment}")
-        logging.info(f"  Holding Period: {holding_period}")
-        logging.info(f"  Cycle Time in Minutes: {cycle_time_in_mins}")
-
+        
         transaction_type = BUY if trade_type == 'Long' else SELL
-
-        logging.info("Dhan API call parameters:")
-        logging.info(f"  security_id: {str(security_id)}")
-        logging.info(f"  exchange_segment: {exchange_segment}")
-        logging.info(f"  transaction_type: {transaction_type}")
-        logging.info(f"  quantity: {lot_size}")
-        logging.info(f"  order_type: {MARKET}")
-        logging.info(f"  product_type: {product_type}")
-        logging.info(f"  price: 0")
-        logging.info(f"  tag: {strategy_key}")
+        
+        order_entry.update({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': symbol,
+            'strategy': strategy_key,
+            'security_id': security_id,
+            'quantity': lot_size,
+            'price': entry_price,
+            'order_type': MARKET,
+            'transaction_type': transaction_type,
+            'product_type': product_type,
+            'exchange_segment': exchange_segment,
+            'order_status': 'Pending',
+            'response': None,
+            'failure_reason': None,
+            'trade_type': trade_type,
+            'stop_loss': stop_loss,
+            'target': target,
+            'position_size': entry_price * lot_size,
+            'holding_period': holding_period,
+            'cycle_time_in_mins': cycle_time_in_mins
+        })
 
         logging.info("Calling Dhan place_order API...")
         response = dhan.place_order(
@@ -292,87 +338,31 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         logging.info(f"Dhan API Response:")
         logging.info(json.dumps(response, indent=2))
 
+        order_entry['response'] = json.dumps(response)
         if response and response['status'] == 'success':
+            order_entry['order_status'] = 'Success'
             logging.info("Order placement successful")
-            
-            entry_datetime = datetime.now()
-            logging.info(f"Trade entry time: {entry_datetime}")
-            
-            planned_exit = None
-            
-            if holding_period.lower() == 'minute':
-                if cycle_time_in_mins is not None:
-                    try:
-                        minutes_to_add = int(cycle_time_in_mins) * 5
-                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add + 30, hours=5)
-                        logging.info(f"Planned exit time calculated based on Cycle_time_in_mins: {cycle_time_in_mins}")
-                    except ValueError:
-                        logging.warning(f"Invalid Cycle_time_in_mins value: {cycle_time_in_mins}. Using default 5 minutes.")
-                        planned_exit = entry_datetime + timedelta(minutes=35, hours=5)
-                else:
-                    logging.info("Cycle_time_in_mins is None. Using default 5 minutes.")
-                    planned_exit = entry_datetime + timedelta(minutes=35, hours=5)
-            elif holding_period.lower() == 'day':
-                planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
-            elif holding_period.lower() == 'week':
-                planned_exit = (entry_datetime + timedelta(days=5)).replace(hour=15, minute=15, second=0, microsecond=0)
-            elif holding_period.lower() == 'month':
-                planned_exit = (entry_datetime + timedelta(days=20)).replace(hour=15, minute=15, second=0, microsecond=0)
-            else:
-                logging.warning(f"Unknown holding period: {holding_period}. Using default (1 day).")
-                planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
-
-            # Ensure planned exit is not in the past
-            if planned_exit <= entry_datetime:
-                planned_exit += timedelta(days=1)
-                logging.info("Planned exit was in the past. Adjusted by adding one day.")
-
-            logging.info(f"Calculated planned exit datetime: {planned_exit}")
-
-            trade_entry = {
-                'timestamp': entry_datetime.strftime('%Y-%m-%d %H:%M:%S'),
-                'symbol': symbol,
-                'strategy': strategy_key,
-                'action': trade_type,
-                'security_id': security_id,
-                'quantity': lot_size,
-                'price': entry_price,
-                'order_type': MARKET,
-                'trigger_price': None,
-                'entry_price': entry_price,
-                'exit_price': None,
-                'stop_loss': stop_loss,
-                'target': target,
-                'order_status': 'open',
-                'response': response,
-                'max_profit': abs(target - entry_price) * lot_size,
-                'max_loss': abs(stop_loss - entry_price) * lot_size,
-                'trade_type': trade_type,
-                'stop_loss_percentage': abs((entry_price - stop_loss) / entry_price) * 100,
-                'target_percentage': abs((target - entry_price) / entry_price) * 100,
-                'atr_sl_multiplier': None,
-                'atr_target_multiplier': None,
-                'product_type': product_type,
-                'position_size': entry_price * lot_size,
-                'holding_period': holding_period,
-                'exit_time': None,
-                'realized_profit': None,
-                'planned_exit_datetime': planned_exit,
-                'exit_reason': None
-            }
-            
-            logging.info("Saving trade entry to database...")
-            save_trade_log_to_mysql([trade_entry])
-            logging.info("Trade entry saved successfully")
         else:
+            order_entry['order_status'] = 'Failed'
+            order_entry['failure_reason'] = response.get('remarks', 'Unknown error')
             logging.error("Order placement failed")
+        
+        # Save the order attempt to the place_order table
+        save_order_attempt_to_mysql(order_entry)
         
         logging.info("=" * 50)
         return response
     except Exception as e:
         logging.error(f"An error occurred while placing order: {str(e)}")
         logging.error(f"Error details: {traceback.format_exc()}")
+        
+        order_entry['order_status'] = 'Error'
+        order_entry['failure_reason'] = str(e)
+        save_order_attempt_to_mysql(order_entry)
+        
         return None
+
+
 
 def get_positions(dhan):
     try:
@@ -406,22 +396,55 @@ def is_position_open(symbol, strategy, engine):
 
 def process_trade(dhan, symbol, strategy_config):
     try:
+        order_entry = {
+            'strategy': strategy_config['Strategy'],
+            'sector_in': strategy_config['sector_in'],
+            'industry_in': strategy_config['industry_in'],
+            'instrument_type': strategy_config['instrument_type'],
+            'start_time': strategy_config['Start'],
+            'stop_time': strategy_config['Stop'],
+            'max_positions': strategy_config['Max_Positions'],
+            'max_position_size': strategy_config['Max_PositionSize'],
+            'max_stock_position_size': strategy_config.get('Max_Stock_Position_Size'),
+            'atr_sl_multiplier': strategy_config['ATR_SL'],
+            'atr_target_multiplier': strategy_config['ATR_Target'],
+            'within_trading_hours': False,
+            'sector_industry_match': False,
+            'position_already_open': False
+        }
+
         engine = get_db_connection()
         if engine is None:
             logging.error("Failed to establish database connection")
+            order_entry['order_status'] = 'Error'
+            order_entry['failure_reason'] = 'Database connection failed'
+            save_order_attempt_to_mysql(order_entry)
             return
 
         if strategy_config.get('On_Off', '').lower() != 'on':
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
+            order_entry['order_status'] = 'Skipped'
+            order_entry['failure_reason'] = 'Strategy turned off'
+            save_order_attempt_to_mysql(order_entry)
             return
 
-        if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
+        order_entry['within_trading_hours'] = within_trading_hours(strategy_config['Start'], strategy_config['Stop'])
+        if not order_entry['within_trading_hours']:
             logging.info(f"Outside trading hours for {symbol}")
+            order_entry['order_status'] = 'Skipped'
+            order_entry['failure_reason'] = 'Outside trading hours'
+            save_order_attempt_to_mysql(order_entry)
             return
 
         sector, industry = get_sector_and_industry(symbol)
-        if not check_sector_industry(sector, industry, strategy_config):
+        order_entry['sector'] = sector
+        order_entry['industry'] = industry
+        order_entry['sector_industry_match'] = check_sector_industry(sector, industry, strategy_config)
+        if not order_entry['sector_industry_match']:
             logging.info(f"Sector/Industry mismatch for {symbol}")
+            order_entry['order_status'] = 'Skipped'
+            order_entry['failure_reason'] = 'Sector/Industry mismatch'
+            save_order_attempt_to_mysql(order_entry)
             return
 
         trading_list_df = get_trading_list()
