@@ -446,6 +446,25 @@ def process_trade(dhan, symbol, strategy_config):
     }
 
     try:
+        # ... [previous checks remain the same] ...
+
+        # Calculate initial position size
+        position_size = round(entry_price * lot_size, 2)
+        log_data['position_size'] = position_size
+
+        # Check Max_Stock_Position_Size
+        max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
+        log_data['max_stock_position_size'] = max_stock_position_size
+
+        if max_stock_position_size is not None and max_stock_position_size != '' and float(max_stock_position_size) > 0:
+            if position_size > float(max_stock_position_size):
+                log_data['order_status'] = 'skipped'
+                log_data['failure_reason'] = f'Position size ({position_size}) exceeds Max_Stock_Position_Size ({max_stock_position_size})'
+                insert_place_order_log(engine, log_data)
+                logging.info(f"Skipping trade for {symbol}: Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size}")
+                return
+
+        
         # Check if strategy is turned on
         if strategy_config.get('On_Off', '').lower() != 'on':
             log_data['order_status'] = 'skipped'
@@ -454,9 +473,14 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
 
+        
+
         # Check trading hours
         log_data['start_time'] = strategy_config['Start']
         log_data['stop_time'] = strategy_config['Stop']
+        
+        
+        
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
             log_data['within_trading_hours'] = False
             log_data['order_status'] = 'skipped'
@@ -465,6 +489,10 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Outside trading hours for {symbol}")
             return
 
+
+
+
+        
         # Check sector and industry
         sector, industry = get_sector_and_industry(symbol)
         log_data['sector'] = sector
