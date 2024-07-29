@@ -446,54 +446,6 @@ def process_trade(dhan, symbol, strategy_config):
     }
 
     try:
-        entry_price = None
-        price_from_redis = get_price(security_id)
-        if price_from_redis is not None:
-            entry_price = price_from_redis
-            logging.info(f"Using price from Redis for {symbol_suffix}: {entry_price}")
-        else:
-            logging.info(f"Failed to get price from Redis for {symbol_suffix}. Falling back to yfinance.")
-            try:
-                ticker = f'{symbol}.NS'
-                data = yf.download(ticker, period='1d', interval='1m')
-                if not data.empty:
-                    entry_price = round(data['Close'].iloc[-1], 2)
-                    logging.info(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
-                else:
-                    raise ValueError("No data returned from yfinance")
-            except Exception as e:
-                log_data['order_status'] = 'error'
-                log_data['failure_reason'] = f'Failed to get price: {str(e)}'
-                insert_place_order_log(engine, log_data)
-                logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
-                return
-
-        if entry_price is None:
-            log_data['order_status'] = 'error'
-            log_data['failure_reason'] = 'Failed to get valid price'
-            insert_place_order_log(engine, log_data)
-            logging.error(f"Failed to get valid price for {symbol_suffix}")
-            return
-
-        log_data['price'] = entry_price
-
-        # Calculate position size
-        position_size = round(entry_price * lot_size, 2)
-        log_data['position_size'] = position_size
-
-        # Check Max_Stock_Position_Size
-        max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
-        log_data['max_stock_position_size'] = max_stock_position_size
-
-        if max_stock_position_size is not None and max_stock_position_size != '' and float(max_stock_position_size) > 0:
-            if position_size > float(max_stock_position_size):
-                log_data['order_status'] = 'skipped'
-                log_data['failure_reason'] = f'Position size ({position_size}) exceeds Max_Stock_Position_Size ({max_stock_position_size})'
-                insert_place_order_log(engine, log_data)
-                logging.info(f"Skipping trade for {symbol}: Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size}")
-                return
-
-        
         # Check if strategy is turned on
         if strategy_config.get('On_Off', '').lower() != 'on':
             log_data['order_status'] = 'skipped'
@@ -502,14 +454,9 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
 
-        
-
         # Check trading hours
         log_data['start_time'] = strategy_config['Start']
         log_data['stop_time'] = strategy_config['Stop']
-        
-        
-        
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
             log_data['within_trading_hours'] = False
             log_data['order_status'] = 'skipped'
@@ -518,10 +465,6 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Outside trading hours for {symbol}")
             return
 
-
-
-
-        
         # Check sector and industry
         sector, industry = get_sector_and_industry(symbol)
         log_data['sector'] = sector
@@ -628,6 +571,7 @@ def process_trade(dhan, symbol, strategy_config):
             return
 
         # Get price
+        entry_price = None
         price_from_redis = get_price(security_id)
         if price_from_redis is not None:
             entry_price = price_from_redis
@@ -637,8 +581,11 @@ def process_trade(dhan, symbol, strategy_config):
             try:
                 ticker = f'{symbol}.NS'
                 data = yf.download(ticker, period='1d', interval='1m')
-                entry_price = round(data['Close'].iloc[-1], 2)
-                logging.info(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
+                if not data.empty:
+                    entry_price = round(data['Close'].iloc[-1], 2)
+                    logging.info(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
+                else:
+                    raise ValueError("No data returned from yfinance")
             except Exception as e:
                 log_data['order_status'] = 'error'
                 log_data['failure_reason'] = f'Failed to get price: {str(e)}'
@@ -646,7 +593,30 @@ def process_trade(dhan, symbol, strategy_config):
                 logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
                 return
 
+        if entry_price is None:
+            log_data['order_status'] = 'error'
+            log_data['failure_reason'] = 'Failed to get valid price'
+            insert_place_order_log(engine, log_data)
+            logging.error(f"Failed to get valid price for {symbol_suffix}")
+            return
+
         log_data['price'] = entry_price
+
+        # Calculate position size
+        position_size = round(entry_price * lot_size, 2)
+        log_data['position_size'] = position_size
+
+        # Check Max_Stock_Position_Size
+        max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
+        log_data['max_stock_position_size'] = max_stock_position_size
+
+        if max_stock_position_size is not None and max_stock_position_size != '' and float(max_stock_position_size) > 0:
+            if position_size > float(max_stock_position_size):
+                log_data['order_status'] = 'skipped'
+                log_data['failure_reason'] = f'Position size ({position_size}) exceeds Max_Stock_Position_Size ({max_stock_position_size})'
+                insert_place_order_log(engine, log_data)
+                logging.info(f"Skipping trade for {symbol}: Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size}")
+                return
 
         # Calculate ATR
         try:
@@ -693,34 +663,11 @@ def process_trade(dhan, symbol, strategy_config):
         target_percentage = round(abs((target - entry_price) / entry_price) * 100, 2)
         max_loss = round(abs((entry_price - stop_loss) * lot_size), 2)
         max_profit = round(abs((target - entry_price) * lot_size), 2)
-        position_size = round(entry_price * lot_size, 2)
 
         log_data['sl_percentage'] = sl_percentage
         log_data['target_percentage'] = target_percentage
         log_data['max_loss'] = max_loss
         log_data['max_profit'] = max_profit
-        log_data['position_size'] = position_size
-
-        # Check for Max_Stock_Position_Size constraint
-        max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
-        log_data['max_stock_position_size'] = max_stock_position_size
-
-        if max_stock_position_size is not None and position_size > max_stock_position_size:
-            adjusted_lot_size = int(max_stock_position_size / entry_price)
-            if adjusted_lot_size < 1:
-                log_data['order_status'] = 'skipped'
-                log_data['failure_reason'] = 'Adjusted lot size would be less than 1'
-                insert_place_order_log(engine, log_data)
-                logging.info(f"Adjusted lot size would be less than 1 for {symbol_suffix}. Skipping trade.")
-                return
-            lot_size = adjusted_lot_size
-            position_size = round(entry_price * lot_size, 2)
-            max_loss = round(abs((entry_price - stop_loss) * lot_size), 2)
-            max_profit = round(abs((target - entry_price) * lot_size), 2)
-            log_data['quantity'] = lot_size
-            log_data['position_size'] = position_size
-            log_data['max_loss'] = max_loss
-            log_data['max_profit'] = max_profit
 
         if float(total_position_size_today) + position_size > float(strategy_config["Max_PositionSize"]):
             log_data['order_status'] = 'skipped'
@@ -758,7 +705,6 @@ def process_trade(dhan, symbol, strategy_config):
         log_data['order_status'] = 'error'
         log_data['failure_reason'] = f'Unexpected error: {str(e)}'
         insert_place_order_log(engine, log_data)
-
 def process_alert(alert_data):
     try:
         strategy_name = alert_data['alert_name']
