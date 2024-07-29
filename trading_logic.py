@@ -6,13 +6,12 @@ import requests
 from dhanhq import dhanhq
 import yfinance as yf
 from datetime import datetime, timedelta, time
-
+from sqlalchemy import create_engine
 import traceback
 import redis
 import logging
 from redis import Redis, ConnectionError, RedisError
 import pytz
-from sqlalchemy import create_engine, text
 
 
 # Configure logging
@@ -95,6 +94,8 @@ def get_strategy_config(strategy_name):
         finally:
             engine.dispose()
     return None
+
+
 
 def get_trading_list():
     engine = get_db_connection()
@@ -291,7 +292,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         )
         logging.info(f"Dhan API Response:")
         logging.info(json.dumps(response, indent=2))
-
+##
         if response and response['status'] == 'success':
             logging.info("Order placement successful")
             
@@ -373,6 +374,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
         logging.error(f"An error occurred while placing order: {str(e)}")
         logging.error(f"Error details: {traceback.format_exc()}")
         return None
+        
 
 def get_positions(dhan):
     try:
@@ -388,21 +390,26 @@ def get_positions(dhan):
         logging.error(f"An error occurred while retrieving portfolio positions: {e}")
         return []
 
-def is_position_open(symbol, strategy, engine):
+def is_position_open(symbol, positions, exchange_segment):
+    for position in positions:
+        if position['tradingSymbol'] == symbol and position['exchangeSegment'] == exchange_segment:
+            return True
+    return False
+
+def insert_place_order_log(conn, log_data):
+    cursor = conn.cursor()
     try:
-        with engine.connect() as connection:
-            query = """
-                SELECT COUNT(*) as open_positions
-                FROM trades
-                WHERE symbol = %s
-                AND strategy = %s
-                AND order_status = 'open'
-            """
-            result = connection.execute(query, (symbol, strategy)).fetchone()
-            return result['open_positions'] > 0
+        columns = ', '.join(log_data.keys())
+        placeholders = ', '.join(['%s'] * len(log_data))
+        query = f"INSERT INTO place_order ({columns}) VALUES ({placeholders})"
+        cursor.execute(query, list(log_data.values()))
+        conn.commit()
+        logging.info(f"Inserted place_order log: {log_data['symbol']}")
     except Exception as e:
-        logging.error(f"Error checking for open position: {e}")
-        return False
+        logging.error(f"Error inserting place_order log: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
 
 def process_trade(dhan, symbol, strategy_config):
     try:
@@ -411,25 +418,58 @@ def process_trade(dhan, symbol, strategy_config):
             logging.error("Failed to establish database connection")
             return
 
+        connection = engine.raw_connection()
+        
+        log_data = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': symbol,
+            'strategy': strategy_config['Strategy'],
+            'within_trading_hours': True,
+            'sector_industry_match': True,
+            'position_already_open': False
+        }
+
         if strategy_config.get('On_Off', '').lower() != 'on':
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Strategy turned off'
+            insert_place_order_log(connection, log_data)
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
 
         if not within_trading_hours(strategy_config['Start'], strategy_config['Stop']):
+            log_data['within_trading_hours'] = False
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Outside trading hours'
+            log_data['start_time'] = strategy_config['Start']
+            log_data['stop_time'] = strategy_config['Stop']
+            insert_place_order_log(connection, log_data)
             logging.info(f"Outside trading hours for {symbol}")
             return
 
         sector, industry = get_sector_and_industry(symbol)
+        log_data['sector'] = sector
+        log_data['industry'] = industry
+        log_data['sector_in'] = strategy_config['sector_in']
+        log_data['industry_in'] = strategy_config['industry_in']
+
         if not check_sector_industry(sector, industry, strategy_config):
+            log_data['sector_industry_match'] = False
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Sector/Industry mismatch'
+            insert_place_order_log(connection, log_data)
             logging.info(f"Sector/Industry mismatch for {symbol}")
             return
 
         trading_list_df = get_trading_list()
         lots_df = get_lots()
         if trading_list_df is None or lots_df is None:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Failed to fetch trading list or lots data'
+            insert_place_order_log(connection, log_data)
             logging.error("Failed to fetch trading list or lots data")
             return
 
+        log_data['instrument_type'] = strategy_config['instrument_type']
         if strategy_config['instrument_type'] == 'FUT':
             symbol_suffix = f"{symbol}-Aug2024-FUT"
             exchange_segment = NSE_FNO
@@ -439,62 +479,78 @@ def process_trade(dhan, symbol, strategy_config):
             exchange_segment = NSE_EQ
             lot_size = 1
         else:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = f"Unsupported instrument type {strategy_config['instrument_type']}"
+            insert_place_order_log(connection, log_data)
             logging.error(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
             return
 
         if lot_size is None:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Failed to determine lot size'
+            insert_place_order_log(connection, log_data)
             logging.error(f"Failed to determine lot size for {symbol}")
             return
 
-        logging.info(f"Processing {strategy_config['TradeType']} for {symbol_suffix} with product type {strategy_config['product_type']}")
-        
+        log_data['quantity'] = lot_size
+        log_data['exchange_segment'] = exchange_segment
+        log_data['product_type'] = strategy_config['product_type']
+
         matches = trading_list_df.loc[trading_list_df['SEM_TRADING_SYMBOL'] == symbol_suffix, 'SEM_SMST_SECURITY_ID']
         if matches.empty:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'No match found in trading list'
+            insert_place_order_log(connection, log_data)
             logging.error(f"No match found for {symbol_suffix}")
             return
+        
         security_id = matches.values[0]
+        log_data['security_id'] = security_id
 
-        # Check if position is already open
         positions = get_positions(dhan)
-        if is_position_open(symbol_suffix, strategy_config['Strategy'], engine):
-            logging.info(f"Position already open for {symbol_suffix} under strategy {strategy_config['Strategy']}. Skipping new order.")
+        if is_position_open(symbol_suffix, positions, exchange_segment):
+            log_data['position_already_open'] = True
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Position already open'
+            insert_place_order_log(connection, log_data)
+            logging.info(f"Position already open for {symbol_suffix}. Skipping new order.")
             return
 
-        # Check for max positions
         today = datetime.now().strftime('%Y-%m-%d')
-        engine = get_db_connection()
-        if engine is not None:
-            connection = engine.raw_connection()
-            cursor = connection.cursor()
-            try:
-                query = """
-                SELECT COUNT(*) as today_orders_count, 
-                    SUM(position_size) as total_position_size_today
-                FROM trades 
-                WHERE DATE(timestamp) = %s AND strategy = %s AND order_status = 'open'
-                """
-                cursor.execute(query, (today, strategy_config['Strategy']))
-                result = cursor.fetchone()
-                today_orders_count = result[0] or 0
-                total_position_size_today = result[1] or 0
-            finally:
-                cursor.close()
-                connection.close()
-                engine.dispose()
+        cursor = connection.cursor()
+        try:
+            query = """
+            SELECT COUNT(*) as today_orders_count, 
+                SUM(position_size) as total_position_size_today
+            FROM trades 
+            WHERE DATE(timestamp) = %s AND strategy = %s AND order_status = 'open'
+            """
+            cursor.execute(query, (today, strategy_config['Strategy']))
+            result = cursor.fetchone()
+            today_orders_count = result[0] or 0
+            total_position_size_today = result[1] or 0
+        finally:
+            cursor.close()
 
-        logging.info(f"Today's orders count for strategy {strategy_config['Strategy']}: {today_orders_count}")
-        logging.info(f"Today's total position size for strategy {strategy_config['Strategy']}: {total_position_size_today}")
+        log_data['today_orders_count'] = today_orders_count
+        log_data['total_position_size_today'] = total_position_size_today
+        log_data['max_positions'] = strategy_config["Max_Positions"]
+        log_data['max_position_size'] = strategy_config["Max_PositionSize"]
 
         if today_orders_count >= strategy_config["Max_Positions"]:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Max positions limit reached'
+            insert_place_order_log(connection, log_data)
             logging.info(f"Max positions limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_Positions']}. Skipping new order.")
             return
 
         if total_position_size_today >= strategy_config["Max_PositionSize"]:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Max position size limit reached'
+            insert_place_order_log(connection, log_data)
             logging.info(f"Max position size limit reached for strategy {strategy_config['Strategy']} on {today}: {strategy_config['Max_PositionSize']}. Skipping new order.")
             return
 
-
-       
         price_from_redis = get_price(security_id)
         if price_from_redis is not None:
             entry_price = price_from_redis
@@ -507,22 +563,35 @@ def process_trade(dhan, symbol, strategy_config):
                 entry_price = round(data['Close'].iloc[-1], 2)
                 logging.info(f"Using price from yfinance for {symbol_suffix}: {entry_price}")
             except Exception as e:
+                log_data['order_status'] = 'skipped'
+                log_data['failure_reason'] = f'Failed to get price: {str(e)}'
+                insert_place_order_log(connection, log_data)
                 logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
                 return
 
-        # Calculate ATR
+        log_data['price'] = entry_price
+
         try:
             ticker = f'{symbol}.NS'
             data = yf.download(ticker, period='1mo', interval='1d')
             atr = round(calculate_atr(data), 2)
         except Exception as e:
-            logging.error(f"Error downloading data from yfinance for {ticker}: {e}")
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = f'Failed to calculate ATR: {str(e)}'
+            insert_place_order_log(connection, log_data)
             logging.error(f"Error calculating ATR for {ticker}: {e}")
             return
 
         if atr == 0:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'ATR calculation resulted in zero'
+            insert_place_order_log(connection, log_data)
             logging.error(f"ATR calculation resulted in zero, skipping trade for {symbol_suffix}")
             return
+
+        log_data['atr'] = atr
+        log_data['atr_sl_multiplier'] = strategy_config["ATR_SL"]
+        log_data['atr_target_multiplier'] = strategy_config["ATR_Target"]
 
         if strategy_config['TradeType'] == 'Long':
             stop_loss = round((entry_price - strategy_config["ATR_SL"] * atr) / TICK_SIZE) * TICK_SIZE
@@ -531,8 +600,15 @@ def process_trade(dhan, symbol, strategy_config):
             stop_loss = round((entry_price + strategy_config["ATR_SL"] * atr) / TICK_SIZE) * TICK_SIZE
             target = round((entry_price - strategy_config["ATR_Target"] * atr) / TICK_SIZE) * TICK_SIZE
         else:
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = f"Unknown trade type {strategy_config['TradeType']}"
+            insert_place_order_log(connection, log_data)
             logging.error(f"Unknown trade type {strategy_config['TradeType']} for {symbol_suffix}. Skipping.")
             return
+
+        log_data['trade_type'] = strategy_config['TradeType']
+        log_data['stop_loss'] = stop_loss
+        log_data['target'] = target
 
         sl_percentage = round(abs((entry_price - stop_loss) / entry_price) * 100, 2)
         target_percentage = round(abs((target - entry_price) / entry_price) * 100, 2)
@@ -540,43 +616,74 @@ def process_trade(dhan, symbol, strategy_config):
         max_profit = round(abs((target - entry_price) * lot_size), 2)
         position_size = round(entry_price * lot_size, 2)
 
-        # Check for Max_Stock_Position_Size constraint
+        log_data['sl_percentage'] = sl_percentage
+        log_data['target_percentage'] = target_percentage
+        log_data['max_loss'] = max_loss
+        log_data['max_profit'] = max_profit
+        log_data['position_size'] = position_size
+
         max_stock_position_size = strategy_config.get('Max_Stock_Position_Size')
+        log_data['max_stock_position_size'] = max_stock_position_size
+
         if max_stock_position_size is not None and position_size > max_stock_position_size:
-            logging.info(f"Position size {position_size} exceeds Max_Stock_Position_Size {max_stock_position_size} for {symbol_suffix}. Adjusting lot size.")
             adjusted_lot_size = int(max_stock_position_size / entry_price)
             if adjusted_lot_size < 1:
+                log_data['order_status'] = 'skipped'
+                log_data['failure_reason'] = 'Adjusted lot size would be less than 1'
+                insert_place_order_log(connection, log_data)
                 logging.info(f"Adjusted lot size would be less than 1 for {symbol_suffix}. Skipping trade.")
                 return
             lot_size = adjusted_lot_size
             position_size = round(entry_price * lot_size, 2)
             max_loss = round(abs((entry_price - stop_loss) * lot_size), 2)
             max_profit = round(abs((target - entry_price) * lot_size), 2)
-            logging.info(f"Adjusted lot size to {lot_size}, new position size: {position_size}")
+            log_data['quantity'] = lot_size
+            log_data['position_size'] = position_size
+            log_data['max_loss'] = max_loss
+            log_data['max_profit'] = max_profit
 
-        logging.info(f"Strategy: {strategy_config['Strategy']}")
-        logging.info(f"ATR: {atr}, ATR SL Multiplier: {strategy_config['ATR_SL']}, ATR Target Multiplier: {strategy_config['ATR_Target']}")
-        logging.info(f"Entry Price: {entry_price}, Stop Loss: {stop_loss}, Stop Loss %: {sl_percentage}%, Target: {target}, Target %: {target_percentage}%")
-        logging.info(f"Max Loss: {max_loss}, Max Profit: {max_profit}")
-        logging.info(f"Lot Size: {lot_size}, Position Size: {position_size}")
-
-        # Check if the adjusted position size still fits within the overall strategy limits
         if float(total_position_size_today) + position_size > float(strategy_config["Max_PositionSize"]):
+            log_data['order_status'] = 'skipped'
+            log_data['failure_reason'] = 'Adding this position would exceed Max_PositionSize'
+            insert_place_order_log(connection, log_data)
             logging.info(f"Adding this position would exceed Max_PositionSize for strategy {strategy_config['Strategy']}. Skipping trade.")
             return
+
+        log_data['holding_period'] = strategy_config['Holding_Period']
+        log_data['cycle_time_in_mins'] = strategy_config.get('Cycle_time_in_mins')
 
         response = place_order(dhan, symbol_suffix, security_id, lot_size, entry_price, stop_loss, target, 
                             strategy_config['TradeType'], strategy_config['Strategy'], 
                             strategy_config['product_type'], exchange_segment, 
                             strategy_config['Holding_Period'],
                             strategy_config.get('Cycle_time_in_mins'))
+        
         if response and response.get('status') == 'success':
+            log_data['order_status'] = 'success'
+            log_data['response'] = json.dumps(response)
             logging.info(f"{strategy_config['TradeType']} order executed for {symbol_suffix}: {response}")
         else:
+            log_data['order_status'] = 'failed'
+            log_data['failure_reason'] = 'Order placement failed'
+            log_data['response'] = json.dumps(response) if response else None
             logging.error(f"Failed to execute {strategy_config['TradeType']} order for {symbol_suffix}. Response: {response}")
+
+        insert_place_order_log(connection, log_data)
+
     except Exception as e:
         logging.error(f"Error in process_trade for symbol {symbol}: {str(e)}")
         logging.error(f"Full error details: {traceback.format_exc()}")
+        if 'log_data' in locals():
+            log_data['order_status'] = 'error'
+            log_data['failure_reason'] = f'Unexpected error: {str(e)}'
+            try:
+                insert_place_order_log(connection, log_data)
+            except Exception as log_error:
+                logging.error(f"Failed to log error in place_order table: {log_error}")
+    finally:
+        if 'connection' in locals() and connection:
+            connection.close()
+        logging.info(f"Finished processing trade for {symbol}")
 
 def process_alert(alert_data):
     try:
@@ -591,6 +698,9 @@ def process_alert(alert_data):
             process_trade(dhan, symbol, strategy_config)
     except Exception as e:
         logging.error(f"Error in process_alert: {str(e)}")
+
+        
+
 
 def check_redis_connection():
     if redis_client is None:
