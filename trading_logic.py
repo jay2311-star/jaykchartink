@@ -307,36 +307,44 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
             entry_datetime = datetime.now()
             logging.info(f"Trade entry time: {entry_datetime}")
             
-            planned_exit = None
-            
+            # Calculate planned exit datetime
             if holding_period.lower() == 'minute':
                 if cycle_time_in_mins is not None:
                     try:
                         minutes_to_add = int(cycle_time_in_mins) * 5
-                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add + 30, hours=5)
+                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add)
                         logging.info(f"Planned exit time calculated based on Cycle_time_in_mins: {cycle_time_in_mins}")
                     except ValueError:
                         logging.warning(f"Invalid Cycle_time_in_mins value: {cycle_time_in_mins}. Using default 5 minutes.")
-                        planned_exit = entry_datetime + timedelta(minutes=35, hours=5)
+                        planned_exit = entry_datetime + timedelta(minutes=5)
                 else:
                     logging.info("Cycle_time_in_mins is None. Using default 5 minutes.")
-                    planned_exit = entry_datetime + timedelta(minutes=35, hours=5)
+                    planned_exit = entry_datetime + timedelta(minutes=5)
             elif holding_period.lower() == 'day':
-                planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
+                planned_exit = entry_datetime + timedelta(days=1)
             elif holding_period.lower() == 'week':
-                planned_exit = (entry_datetime + timedelta(days=5)).replace(hour=15, minute=15, second=0, microsecond=0)
+                planned_exit = entry_datetime + timedelta(days=5)
             elif holding_period.lower() == 'month':
-                planned_exit = (entry_datetime + timedelta(days=20)).replace(hour=15, minute=15, second=0, microsecond=0)
+                planned_exit = entry_datetime + timedelta(days=20)
             else:
                 logging.warning(f"Unknown holding period: {holding_period}. Using default (1 day).")
-                planned_exit = (entry_datetime + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
+                planned_exit = entry_datetime + timedelta(days=1)
+
+            # Ensure planned exit is not later than 3:15 PM
+            max_exit_time = planned_exit.replace(hour=15, minute=15, second=0, microsecond=0)
+            if planned_exit > max_exit_time:
+                if planned_exit.date() == max_exit_time.date():
+                    planned_exit = max_exit_time
+                else:
+                    planned_exit = (planned_exit.date() + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
 
             # Ensure planned exit is not in the past
             if planned_exit <= entry_datetime:
-                planned_exit += timedelta(days=1)
-                logging.info("Planned exit was in the past. Adjusted by adding one day.")
+                planned_exit = (entry_datetime.date() + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
 
             logging.info(f"Calculated planned exit datetime: {planned_exit}")
+
+
 
             trade_entry = {
                 'timestamp': entry_datetime.strftime('%Y-%m-%d %H:%M:%S'),
