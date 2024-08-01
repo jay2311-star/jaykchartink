@@ -312,35 +312,33 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 if cycle_time_in_mins is not None:
                     try:
                         minutes_to_add = int(cycle_time_in_mins) * 5
-                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add)
+                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add, hours=5, minutes=30)
                         logging.info(f"Planned exit time calculated based on Cycle_time_in_mins: {cycle_time_in_mins}")
                     except ValueError:
                         logging.warning(f"Invalid Cycle_time_in_mins value: {cycle_time_in_mins}. Using default 5 minutes.")
-                        planned_exit = entry_datetime + timedelta(minutes=5)
+                        planned_exit = entry_datetime + timedelta(minutes=35, hours=5)
                 else:
                     logging.info("Cycle_time_in_mins is None. Using default 5 minutes.")
-                    planned_exit = entry_datetime + timedelta(minutes=5)
+                    planned_exit = entry_datetime + timedelta(minutes=35, hours=5)
             elif holding_period.lower() == 'day':
-                planned_exit = entry_datetime + timedelta(days=1)
+                planned_exit = (entry_datetime + timedelta(days=1, hours=5, minutes=30)).replace(hour=15, minute=15, second=0, microsecond=0)
             elif holding_period.lower() == 'week':
-                planned_exit = entry_datetime + timedelta(days=5)
+                planned_exit = (entry_datetime + timedelta(days=5, hours=5, minutes=30)).replace(hour=15, minute=15, second=0, microsecond=0)
             elif holding_period.lower() == 'month':
-                planned_exit = entry_datetime + timedelta(days=20)
+                planned_exit = (entry_datetime + timedelta(days=20, hours=5, minutes=30)).replace(hour=15, minute=15, second=0, microsecond=0)
             else:
                 logging.warning(f"Unknown holding period: {holding_period}. Using default (1 day).")
-                planned_exit = entry_datetime + timedelta(days=1)
+                planned_exit = (entry_datetime + timedelta(days=1, hours=5, minutes=30)).replace(hour=15, minute=15, second=0, microsecond=0)
 
-            # Ensure planned exit is not later than 3:15 PM
+            # Ensure planned exit is not later than 3:15 PM IST
             max_exit_time = planned_exit.replace(hour=15, minute=15, second=0, microsecond=0)
             if planned_exit > max_exit_time:
-                if planned_exit.date() == max_exit_time.date():
-                    planned_exit = max_exit_time
-                else:
-                    planned_exit = (planned_exit.date() + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
+                planned_exit = max_exit_time
 
             # Ensure planned exit is not in the past
-            if planned_exit <= entry_datetime:
-                planned_exit = (entry_datetime.date() + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
+            current_time = datetime.now() + timedelta(hours=5, minutes=30)  # Current time in IST
+            if planned_exit <= current_time:
+                planned_exit = (current_time.date() + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
 
             logging.info(f"Calculated planned exit datetime: {planned_exit}")
 
