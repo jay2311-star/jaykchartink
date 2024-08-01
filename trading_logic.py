@@ -165,7 +165,7 @@ def check_existing_trades(symbol, strategy, engine):
             AND DATE(timestamp) = CURDATE()
             """)
             result = connection.execute(query, {"symbol": symbol, "strategy": strategy}).fetchone()
-            return result['trade_count']
+            return result[0] if result else 0  # Return the first (and only) element of the tuple
     except Exception as e:
         logging.error(f"Error checking existing trades: {e}")
         logging.error(f"Error details: {traceback.format_exc()}")
@@ -480,12 +480,18 @@ def process_trade(dhan, symbol, strategy_config):
        
         maxinastrategy = strategy_config.get('Maxinastrategy')
         if maxinastrategy is not None and maxinastrategy != '':
-            existing_trades = check_existing_trades(symbol, strategy_config['Strategy'], engine)
-            if existing_trades >= int(maxinastrategy):
-                log_data['order_status'] = 'skipped'
-                log_data['failure_reason'] = f'Max trades ({maxinastrategy}) for this symbol and strategy reached'
-                insert_place_order_log(engine, log_data)
-                logging.info(f"Skipping trade for {symbol}: Max trades for this symbol and strategy reached")
+            try:
+                maxinastrategy = int(maxinastrategy)
+                existing_trades = check_existing_trades(symbol, strategy_config['Strategy'], engine)
+                if existing_trades >= maxinastrategy:
+                    log_data['order_status'] = 'skipped'
+                    log_data['failure_reason'] = f'Max trades ({maxinastrategy}) for this symbol and strategy reached'
+                    insert_place_order_log(engine, log_data)
+                    logging.info(f"Skipping trade for {symbol}: Max trades for this symbol and strategy reached")
+                    return
+            except ValueError:
+                logging.warning(f"Invalid Maxinastrategy value: {maxinastrategy}. Ignoring this check.")
+
                 return
 
 
@@ -742,6 +748,8 @@ def process_trade(dhan, symbol, strategy_config):
         log_data['order_status'] = 'error'
         log_data['failure_reason'] = f'Unexpected error: {str(e)}'
         insert_place_order_log(engine, log_data)
+
+
 def process_alert(alert_data):
     try:
         strategy_name = alert_data['alert_name']
