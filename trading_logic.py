@@ -87,13 +87,15 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period, Cycle_time_in_mins, and Max_Stock_Position_Size are included
+                # Ensure Holding_Period, Cycle_time_in_mins, Max_Stock_Position_Size, and Maxinastrategy are included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
                 if 'Cycle_time_in_mins' not in config:
                     config['Cycle_time_in_mins'] = None  # Default to None if not specified
                 if 'Max_Stock_Position_Size' not in config:
                     config['Max_Stock_Position_Size'] = None  # Default to None if not specified
+                if 'Maxinastrategy' not in config:
+                    config['Maxinastrategy'] = None  # Default to None if not specified
                 return config
             return None
         finally:
@@ -152,7 +154,22 @@ def get_sector_and_industry(symbol):
     else:
         return "Unknown", "Unknown"
 
-
+def check_existing_trades(symbol, strategy, engine):
+    try:
+        with engine.connect() as connection:
+            query = text("""
+            SELECT COUNT(*) as trade_count
+            FROM trades
+            WHERE symbol = :symbol
+            AND strategy = :strategy
+            AND DATE(timestamp) = CURDATE()
+            """)
+            result = connection.execute(query, {"symbol": symbol, "strategy": strategy}).fetchone()
+            return result['trade_count']
+    except Exception as e:
+        logging.error(f"Error checking existing trades: {e}")
+        logging.error(f"Error details: {traceback.format_exc()}")
+        return 0
 
 
 def save_trade_log_to_mysql(trade_entries):
@@ -460,6 +477,19 @@ def process_trade(dhan, symbol, strategy_config):
             insert_place_order_log(engine, log_data)
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
+       
+        maxinastrategy = strategy_config.get('Maxinastrategy')
+        if maxinastrategy is not None and maxinastrategy != '':
+            existing_trades = check_existing_trades(symbol, strategy_config['Strategy'], engine)
+            if existing_trades >= int(maxinastrategy):
+                log_data['order_status'] = 'skipped'
+                log_data['failure_reason'] = f'Max trades ({maxinastrategy}) for this symbol and strategy reached'
+                insert_place_order_log(engine, log_data)
+                logging.info(f"Skipping trade for {symbol}: Max trades for this symbol and strategy reached")
+                return
+
+
+        
 
         # Check trading hours
         log_data['start_time'] = strategy_config['Start']
