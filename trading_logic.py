@@ -312,7 +312,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 if cycle_time_in_mins is not None:
                     try:
                         minutes_to_add = int(cycle_time_in_mins) * 5
-                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add, hours=5, minutes=30)
+                        planned_exit = entry_datetime + timedelta(minutes=minutes_to_add + 30, hours=5)
                         logging.info(f"Planned exit time calculated based on Cycle_time_in_mins: {cycle_time_in_mins}")
                     except ValueError:
                         logging.warning(f"Invalid Cycle_time_in_mins value: {cycle_time_in_mins}. Using default 5 minutes.")
@@ -341,6 +341,7 @@ def place_order(dhan, symbol, security_id, lot_size, entry_price, stop_loss, tar
                 planned_exit = (current_time.date() + timedelta(days=1)).replace(hour=15, minute=15, second=0, microsecond=0)
 
             logging.info(f"Calculated planned exit datetime: {planned_exit}")
+
 
 
 
