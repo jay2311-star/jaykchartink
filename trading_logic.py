@@ -485,7 +485,20 @@ def process_trade(dhan, symbol, strategy_config):
             insert_place_order_log(engine, log_data)
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
-       
+
+        # Determine symbol suffix early
+        if strategy_config['instrument_type'] == 'FUT':
+            symbol_suffix = f"{symbol}-Aug2024-FUT"
+        elif strategy_config['instrument_type'] == 'EQ':
+            symbol_suffix = symbol
+        else:
+            log_data['order_status'] = 'error'
+            log_data['failure_reason'] = f"Unsupported instrument type {strategy_config['instrument_type']}"
+            insert_place_order_log(engine, log_data)
+            logging.error(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
+            return
+
+        # Check Maxinastrategy
         maxinastrategy = strategy_config.get('Maxinastrategy')
         if maxinastrategy is not None and maxinastrategy != '':
             try:
@@ -500,7 +513,8 @@ def process_trade(dhan, symbol, strategy_config):
                     return
             except ValueError:
                 logging.warning(f"[{datetime.utcnow()}] Invalid Maxinastrategy value: {maxinastrategy}. Ignoring this check.")
-                return
+
+        # Rest of the function remains the same...
 
 
         
