@@ -87,13 +87,15 @@ def get_strategy_config(strategy_name):
                     config['Start'] = str(config['Start']).split()[-1]
                 if isinstance(config['Stop'], pd.Timedelta):
                     config['Stop'] = str(config['Stop']).split()[-1]
-                # Ensure Holding_Period, Cycle_time_in_mins, and Max_Stock_Position_Size are included
+                # Ensure Holding_Period, Cycle_time_in_mins, Max_Stock_Position_Size, and Maxinastrategy are included
                 if 'Holding_Period' not in config:
                     config['Holding_Period'] = 'day'  # Default to 'day' if not specified
                 if 'Cycle_time_in_mins' not in config:
                     config['Cycle_time_in_mins'] = None  # Default to None if not specified
                 if 'Max_Stock_Position_Size' not in config:
                     config['Max_Stock_Position_Size'] = None  # Default to None if not specified
+                if 'Maxinastrategy' not in config:
+                    config['Maxinastrategy'] = None  # Default to None if not specified
                 return config
             return None
         finally:
@@ -152,7 +154,28 @@ def get_sector_and_industry(symbol):
     else:
         return "Unknown", "Unknown"
 
-
+def check_existing_trades(symbol, strategy, engine):
+    try:
+        with engine.connect() as connection:
+            query = text("""
+            SELECT COUNT(*) as trade_count
+            FROM trades
+            WHERE symbol = :symbol
+            AND strategy = :strategy
+            AND DATE(timestamp + INTERVAL 5 HOUR 30 MINUTE) = CURDATE()
+            """)
+            result = connection.execute(query, {"symbol": symbol, "strategy": strategy}).fetchone()
+            trade_count = result[0] if result else 0
+            
+            # Log using UTC time for consistency with the rest of your application
+            utc_now = datetime.utcnow()
+            logging.info(f"[{utc_now}] Existing trades for {symbol} in strategy {strategy} today (IST): {trade_count}")
+            
+            return trade_count
+    except Exception as e:
+        logging.error(f"Error checking existing trades for {symbol} in strategy {strategy}: {e}")
+        logging.error(f"Error details: {traceback.format_exc()}")
+        return 0
 
 
 def save_trade_log_to_mysql(trade_entries):
@@ -461,6 +484,39 @@ def process_trade(dhan, symbol, strategy_config):
             logging.info(f"Strategy {strategy_config['Strategy']} is turned off. Skipping trade for {symbol}")
             return
 
+        # Determine symbol suffix early
+        if strategy_config['instrument_type'] == 'FUT':
+            symbol_suffix = f"{symbol}-Aug2024-FUT"
+        elif strategy_config['instrument_type'] == 'EQ':
+            symbol_suffix = symbol
+        else:
+            log_data['order_status'] = 'error'
+            log_data['failure_reason'] = f"Unsupported instrument type {strategy_config['instrument_type']}"
+            insert_place_order_log(engine, log_data)
+            logging.error(f"Unsupported instrument type {strategy_config['instrument_type']} for {symbol}. Skipping.")
+            return
+
+        # Check Maxinastrategy
+        maxinastrategy = strategy_config.get('Maxinastrategy')
+        if maxinastrategy is not None and maxinastrategy != '':
+            try:
+                maxinastrategy = int(maxinastrategy)
+                existing_trades = check_existing_trades(symbol_suffix, strategy_config['Strategy'], engine)
+                logging.info(f"[{datetime.utcnow()}] Checking Maxinastrategy for {symbol_suffix}: limit {maxinastrategy}, existing trades {existing_trades}")
+                if existing_trades >= maxinastrategy:
+                    log_data['order_status'] = 'skipped'
+                    log_data['failure_reason'] = f'Max trades ({maxinastrategy}) for this symbol and strategy reached'
+                    insert_place_order_log(engine, log_data)
+                    logging.info(f"[{datetime.utcnow()}] Skipping trade for {symbol_suffix}: Max trades for this symbol and strategy reached")
+                    return
+            except ValueError:
+                logging.warning(f"[{datetime.utcnow()}] Invalid Maxinastrategy value: {maxinastrategy}. Ignoring this check.")
+
+        # Rest of the function remains the same...
+
+
+        
+
         # Check trading hours
         log_data['start_time'] = strategy_config['Start']
         log_data['stop_time'] = strategy_config['Stop']
@@ -712,6 +768,8 @@ def process_trade(dhan, symbol, strategy_config):
         log_data['order_status'] = 'error'
         log_data['failure_reason'] = f'Unexpected error: {str(e)}'
         insert_place_order_log(engine, log_data)
+
+
 def process_alert(alert_data):
     try:
         strategy_name = alert_data['alert_name']
