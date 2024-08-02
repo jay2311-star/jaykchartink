@@ -178,8 +178,6 @@ def check_existing_trades(symbol, strategy, engine):
         return 0
 
 
-
-
 def save_trade_log_to_mysql(trade_entries):
     if not trade_entries:
         logging.warning("No trade entries to save")
