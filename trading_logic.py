@@ -162,7 +162,7 @@ def check_existing_trades(symbol, strategy, engine):
             FROM trades
             WHERE symbol = :symbol
             AND strategy = :strategy
-            AND DATE(timestamp + INTERVAL 5 HOUR 30 MINUTE) = CURDATE()
+            AND DATE(timestamp + INTERVAL 5 HOUR + INTERVAL 30 MINUTE) = CURDATE()
             """)
             result = connection.execute(query, {"symbol": symbol, "strategy": strategy}).fetchone()
             trade_count = result[0] if result else 0
@@ -176,7 +176,6 @@ def check_existing_trades(symbol, strategy, engine):
         logging.error(f"Error checking existing trades for {symbol} in strategy {strategy}: {e}")
         logging.error(f"Error details: {traceback.format_exc()}")
         return 0
-
 
 def save_trade_log_to_mysql(trade_entries):
     if not trade_entries:
