@@ -165,11 +165,15 @@ def check_existing_trades(symbol, strategy, engine):
             AND DATE(timestamp) = CURDATE()
             """)
             result = connection.execute(query, {"symbol": symbol, "strategy": strategy}).fetchone()
-            return result[0] if result else 0  # Return the first (and only) element of the tuple
+            trade_count = result[0] if result else 0
+            logging.info(f"Existing trades for {symbol} in strategy {strategy} today: {trade_count}")
+            return trade_count
     except Exception as e:
-        logging.error(f"Error checking existing trades: {e}")
+        logging.error(f"Error checking existing trades for {symbol} in strategy {strategy}: {e}")
         logging.error(f"Error details: {traceback.format_exc()}")
         return 0
+
+
 
 
 def save_trade_log_to_mysql(trade_entries):
@@ -483,6 +487,7 @@ def process_trade(dhan, symbol, strategy_config):
             try:
                 maxinastrategy = int(maxinastrategy)
                 existing_trades = check_existing_trades(symbol, strategy_config['Strategy'], engine)
+                logging.info(f"Checking Maxinastrategy: limit {maxinastrategy}, existing trades {existing_trades}")
                 if existing_trades >= maxinastrategy:
                     log_data['order_status'] = 'skipped'
                     log_data['failure_reason'] = f'Max trades ({maxinastrategy}) for this symbol and strategy reached'
@@ -491,7 +496,6 @@ def process_trade(dhan, symbol, strategy_config):
                     return
             except ValueError:
                 logging.warning(f"Invalid Maxinastrategy value: {maxinastrategy}. Ignoring this check.")
-
                 return
 
 
