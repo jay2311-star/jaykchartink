@@ -162,11 +162,15 @@ def check_existing_trades(symbol, strategy, engine):
             FROM trades
             WHERE symbol = :symbol
             AND strategy = :strategy
-            AND DATE(timestamp) = CURDATE()
+            AND DATE(timestamp + INTERVAL 5 HOUR 30 MINUTE) = CURDATE()
             """)
             result = connection.execute(query, {"symbol": symbol, "strategy": strategy}).fetchone()
             trade_count = result[0] if result else 0
-            logging.info(f"Existing trades for {symbol} in strategy {strategy} today: {trade_count}")
+            
+            # Log using UTC time for consistency with the rest of your application
+            utc_now = datetime.utcnow()
+            logging.info(f"[{utc_now}] Existing trades for {symbol} in strategy {strategy} today (IST): {trade_count}")
+            
             return trade_count
     except Exception as e:
         logging.error(f"Error checking existing trades for {symbol} in strategy {strategy}: {e}")
@@ -486,16 +490,16 @@ def process_trade(dhan, symbol, strategy_config):
         if maxinastrategy is not None and maxinastrategy != '':
             try:
                 maxinastrategy = int(maxinastrategy)
-                existing_trades = check_existing_trades(symbol, strategy_config['Strategy'], engine)
-                logging.info(f"Checking Maxinastrategy: limit {maxinastrategy}, existing trades {existing_trades}")
+                existing_trades = check_existing_trades(symbol_suffix, strategy_config['Strategy'], engine)
+                logging.info(f"[{datetime.utcnow()}] Checking Maxinastrategy for {symbol_suffix}: limit {maxinastrategy}, existing trades {existing_trades}")
                 if existing_trades >= maxinastrategy:
                     log_data['order_status'] = 'skipped'
                     log_data['failure_reason'] = f'Max trades ({maxinastrategy}) for this symbol and strategy reached'
                     insert_place_order_log(engine, log_data)
-                    logging.info(f"Skipping trade for {symbol}: Max trades for this symbol and strategy reached")
+                    logging.info(f"[{datetime.utcnow()}] Skipping trade for {symbol_suffix}: Max trades for this symbol and strategy reached")
                     return
             except ValueError:
-                logging.warning(f"Invalid Maxinastrategy value: {maxinastrategy}. Ignoring this check.")
+                logging.warning(f"[{datetime.utcnow()}] Invalid Maxinastrategy value: {maxinastrategy}. Ignoring this check.")
                 return
 
 
