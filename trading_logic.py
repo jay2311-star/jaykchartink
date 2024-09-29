@@ -485,7 +485,7 @@ def process_trade(dhan, symbol, strategy_config):
 
         # Determine symbol suffix early
         if strategy_config['instrument_type'] == 'FUT':
-            symbol_suffix = f"{symbol}-Sep2024-FUT"
+            symbol_suffix = f"{symbol}-Oct2024-FUT"
         elif strategy_config['instrument_type'] == 'EQ':
             symbol_suffix = symbol
         else:
@@ -554,9 +554,9 @@ def process_trade(dhan, symbol, strategy_config):
         # Determine symbol suffix and exchange segment
         log_data['instrument_type'] = strategy_config['instrument_type']
         if strategy_config['instrument_type'] == 'FUT':
-            symbol_suffix = f"{symbol}-Sep2024-FUT"
+            symbol_suffix = f"{symbol}-Oct2024-FUT"
             exchange_segment = NSE_FNO
-            lot_size = lots_df.loc[lots_df['Symbol'] == symbol, 'Sep'].values[0] if not lots_df.empty else None
+            lot_size = lots_df.loc[lots_df['Symbol'] == symbol, 'Oct'].values[0] if not lots_df.empty else None
         elif strategy_config['instrument_type'] == 'EQ':
             symbol_suffix = symbol
             exchange_segment = NSE_EQ
